@@ -1,22 +1,34 @@
 # エージェント
 
+- エージェントは、画像とテキストのルールを参考に入出力を行う
+- 入出力はエージェントによって変えられる
+
+
 ```mermaid
 mindmap
-  Agent
-    PMエージェント
-    議事録エージェント
-    コードエージェント
-      フロントエンドエージェント
-      バックエンドエージェント
-      テストエージェント
-      インフラエージェント
-      IoTエージェント
-    調査エージェント
-    プロモーションエージェント
-    3Dエージェント
-      CADエージェント
-      Sketchfabエージェント
+  root((エージェント))
+    共通エージェント
+      PMエージェント
+      議事録エージェント
+      コードエージェント
+        フロントエンドエージェント
+        バックエンドエージェント
+        IoTエージェント
+      調査エージェント
+      プロモーションエージェント
+      3Dエージェント
+        CADエージェント
+    プロジェクト別拡張
+      Project A
+        ⤷ PMエージェントを拡張
+        ⤷ CADエージェントを拡張
+      Project B
+        ⤷ 議事録エージェントを拡張
+
 ```
+
+
+
 
 ## 議事録エージェント
 
@@ -40,13 +52,27 @@ flowchart LR
 
 ```
 
+### 実現方法
+
+**オンライン（Google Meet）**:
+- Google Meet録画 → Google Drive保存 → Webhook検知
+- 並列処理: Google Docs議事録取得 + 動画からスクリーンショット抽出
+- スクリーンショット抽出: PySceneDetect（シーン検出） → DeepSeek OCR（テキスト抽出） → Vision API（図表検出） → LLM（重要度スコアリング）
+- 統合: 議事録 + スクリーンショット → GitHub保存（`{TargetDir}/Docs/Doc-{MeetingID}-{DateTime}.md`）
+
+**対面（Mentra Glass/ioデバイス）**:
+- デバイス → Modal GPU Serverへリアルタイムストリーム送信（音声・映像）
+- 並列リアルタイム処理: Whisper API（音声認識） + リアルタイムシーン検出 → DeepSeek OCR → Vision API → LLM
+- 統合: 音声テキスト + 重要フレーム → GitHub保存（即座）
+
 ## PMエージェント
 
 ```mermaid
 flowchart LR
     %% --- 入力 ---
     subgraph Input["入力"]
-        G[議事録ストレージ<br/>（Google Drive / Notion）]
+        G[📘 議事録ストレージ<br/>（Google Drive / Notion）]
+        M[✉️ メール / Slack<br/>（依頼・報告メッセージ）]
     end
 
     %% --- 中央処理 ---
@@ -55,62 +81,71 @@ flowchart LR
     %% --- 出力 ---
     subgraph Output["出力"]
         TODO[📝 ToDoリスト<br/>（チームタスク管理）]
-        SPEC[📄 仕様書ストレージ（Notion / Google Drive / GitHub）]
-        MAIL[✉️ メール/Slack<br/>（依頼・報告用）]
+        SPEC[📄 仕様書ストレージ<br/>（Notion / Google Drive / GitHub）]
+        MAIL[📨 メール / Slack<br/>（依頼・報告送信）]
     end
 
     %% --- 矢印上に動作を明記 ---
-    G -->|"画像付き議事録を転送"| MA
+    G -->|"画像付き議事録を受信"| MA
+    M -->|"依頼・報告メッセージを受信"| MA
     MA -->|"タスクリストを保存"| TODO
     MA -->|"画像付き仕様書を生成"| SPEC
-    MA -->|"担当者へ依頼メール"| MAIL
+    MA -->|"担当者へ依頼メール送信"| MAIL
 ```
+
 
 
 ## 調査エージェント
 
+
 ```mermaid
+
 flowchart LR
     %% --- 入力 ---
     subgraph Input["入力"]
-        DOC[📄 PDF / 論文 / ホワイトペーパー]
-        IMG[🖼️ 画像・図表・スクリーンショット]
-        LINK[🔗 Webページ / Google検索結果 / APIレスポンス]
-        NOTE[🗒️ 会議メモ / 議事録 / チャットログ]
-        DATA[📊 データセット / CSV / Excel]
-        VIDEO[🎥 動画 / プレゼン / セミナー]
+        WEB[🔗 Web / APIレスポンス<br/>（検索・スクレイピング結果）]
+        PROMPT[🧠 調査プロンプト<br/>（PMエージェント + 自身のToDo）]
+        REF[📘 参考資料<br/>（PDF / 論文 / 議事録 / 画像・図表）]
     end
 
     %% --- 中央処理 ---
-    RA[🧠 調査エージェント<br/>（要約・比較・引用抽出・知識化・レポート生成）]
+    RA[🧠 調査エージェント<br/>（DeepResearch）]
 
     %% --- 出力 ---
     subgraph Output["出力"]
         NOTION[📘 Notion 知識ノート<br/>（長期保存・チーム共有）]
         SLACK[💬 Slack通知 / ToDo生成<br/>（アクション連携）]
-        DRIVE[📂 Google Drive資料整理<br/>（PDF・Markdown出力）]
+        DRIVE[📂 Google Drive<br/>（PDF・Markdown出力）]
         SHEET[📊 Google Sheets / Excel<br/>（定量比較・表形式）]
-        MD[🧾 Markdown / GitHub Wiki<br/>（開発ドキュメント）]
+        MD[🧾 Markdown / GitHub Wiki<br/>（技術・調査ドキュメント）]
         DB[🧠 ベクトルDB登録<br/>（再検索・類似抽出）]
         DASH[📈 ダッシュボード更新<br/>（PowerBI / Lookerなど）]
     end
 
     %% --- 矢印（動作） ---
-    DOC -->|"文書を解析・要約"| RA
-    IMG -->|"図表から情報抽出"| RA
-    LINK -->|"Web情報を取得・整理"| RA
-    NOTE -->|"議事録を知識化"| RA
-    DATA -->|"データを分析"| RA
-    VIDEO -->|"映像・音声から要点抽出"| RA
+    WEB -->|"Web検索情報を取得"| RA
+    PROMPT -->|"調査テーマ・条件を受信"| RA
+    REF -->|"参考資料を読み込み"| RA
 
-    RA -->|"知識ノートを保存"| NOTION
-    RA -->|"結果を共有・通知"| SLACK
-    RA -->|"資料を整理・出力"| DRIVE
-    RA -->|"比較結果を表形式で保存"| SHEET
-    RA -->|"技術レポートを作成"| MD
-    RA -->|"知識をDBに登録"| DB
-    RA -->|"可視化を更新"| DASH
+    RA -->|"知識を整理しNotionへ保存"| NOTION
+    RA -->|"調査結果をSlack連携"| SLACK
+    RA -->|"資料をDriveに出力"| DRIVE
+    RA -->|"比較表をSheetsで生成"| SHEET
+    RA -->|"Markdownレポートを作成"| MD
+    RA -->|"内容をベクトルDBに登録"| DB
+    RA -->|"可視化ツールを更新"| DASH
 ```
+
+### 定期的に調査
+
+- 「figure03, 1x, tesla optimusのような人型ロボットをゼロから作りたいので、figure03, 1x, tesla optimusから出ている情報から必要なハードウェアやソフトウェアのコンポーネントを見つけてきて。」
+    - この目的を達成するために、必要な情報（気づき）を議事録（Smartglasses, web会議）から引っ張ってきてもらい、それを検索プロンプトに自動で入れられるように、かつそのプロンプトをWebサイトなどで可視化できるようにする
+
+
+### 一時的に調査
+
+- PMエージェントから出てきたタスクリストに応じて、調査をする
+
 
 ## コーディングエージェント
 
@@ -146,3 +181,11 @@ flowchart LR
     CA -->|"技術ドキュメントを生成"| DOCS
     CA -->|"進捗レポートを通知"| REPORT
 ```
+
+### 実現方法
+
+- GitHub Webhookで議事録更新検知 → 処理履歴DB確認（未処理のみ処理）
+- **Cursor Agent Background API**でコード生成/更新
+  - 初回: 新規セッション作成 → コード生成 → セッションID保存
+  - 2回目以降: セッションID再利用 → 既存コード更新（連続的に改善）
+- scope別制御（`frontend/`、`backend/`、`test/`）→ GitHub PR自動作成
