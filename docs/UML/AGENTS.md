@@ -10,7 +10,7 @@ mindmap
     共通エージェント
       PMエージェント
       議事録エージェント
-      コードエージェント
+      コーディングエージェント
         フロントエンドエージェント
         バックエンドエージェント
         IoTエージェント
@@ -36,20 +36,21 @@ mindmap
 flowchart LR
     subgraph Input["入力"]
         SG[🎥 Smart Glass<br/>（スマートグラス）]
+        IO[📎 ioデバイス<br/>（ペンダント）]
         GM[💻 Google Meet<br/>（オンライン会議）]
     end
 
     API[🤖 議事録エージェント<br/>（AI要約・動画解析）]
 
     subgraph Output["出力"]
-        Storage[📂 ストレージ<br/>（Drive / GitHub / Notion）]
+        Storage[📂 議事録ストレージ<br/>（Drive / GitHub / Notion）]
     end
 
     %% 動作（矢印上に記載）
     SG -->|"映像・音声をリアルタイム送信"| API
+    IO -->|"映像・音声をリアルタイム送信"| API
     GM -->|"録画データを送信"| API
     API -->|"画像つき議事録を生成・保存"| Storage
-
 ```
 
 ### 実現方法
@@ -104,8 +105,8 @@ flowchart LR
     %% --- 入力 ---
     subgraph Input["入力"]
         WEB[🔗 Web / APIレスポンス<br/>（検索・スクレイピング結果）]
-        PROMPT[🧠 調査プロンプト<br/>（PMエージェント + 自身のToDo）]
-        REF[📘 参考資料<br/>（PDF / 論文 / 議事録 / 画像・図表）]
+        PROMPT[🧠 調査プロンプト（PMエージェント）<br/>（タスクベースの調査指示）]
+        INSIGHT[💡 気づき<br/>（議事録×調査プロンプトの関連情報）]
     end
 
     %% --- 中央処理 ---
@@ -118,28 +119,31 @@ flowchart LR
         DRIVE[📂 Google Drive<br/>（PDF・Markdown出力）]
         SHEET[📊 Google Sheets / Excel<br/>（定量比較・表形式）]
         MD[🧾 Markdown / GitHub Wiki<br/>（技術・調査ドキュメント）]
-        DB[🧠 ベクトルDB登録<br/>（再検索・類似抽出）]
         DASH[📈 ダッシュボード更新<br/>（PowerBI / Lookerなど）]
     end
 
     %% --- 矢印（動作） ---
     WEB -->|"Web検索情報を取得"| RA
     PROMPT -->|"調査テーマ・条件を受信"| RA
-    REF -->|"参考資料を読み込み"| RA
+    INSIGHT -->|"関連キーワード・状況を追加反映"| RA
 
     RA -->|"知識を整理しNotionへ保存"| NOTION
     RA -->|"調査結果をSlack連携"| SLACK
     RA -->|"資料をDriveに出力"| DRIVE
     RA -->|"比較表をSheetsで生成"| SHEET
     RA -->|"Markdownレポートを作成"| MD
-    RA -->|"内容をベクトルDBに登録"| DB
     RA -->|"可視化ツールを更新"| DASH
+
 ```
 
 ### 定期的に調査
 
 - 「figure03, 1x, tesla optimusのような人型ロボットをゼロから作りたいので、figure03, 1x, tesla optimusから出ている情報から必要なハードウェアやソフトウェアのコンポーネントを見つけてきて。」
-    - この目的を達成するために、必要な情報（気づき）を議事録（Smartglasses, web会議）から引っ張ってきてもらい、それを検索プロンプトに自動で入れられるように、かつそのプロンプトをWebサイトなどで可視化できるようにする
+    - この目的を達成するために、気づきを議事録（Smartglasses, web会議）から引っ張ってきてもらい、それを検索プロンプトに自動で入れられるように、かつそのプロンプトを管理サイトなどで可視化できるようにする
+    - 1) Google Meetで「Optimusの関節トルク推定が不安定」と報告。 
+      - → 調査観点に「関節トルク推定方式」「アクチュエータ制御方式」を追加。
+    - 2) Smart Glass現場メモで「重心制御が難しい」と記録。
+      - → 調査観点に「二足歩行時の重心制御」「ZMP制御」「足裏センサ」を追加。
 
 
 ### 一時的に調査
@@ -155,11 +159,10 @@ flowchart LR
     subgraph Input["入力"]
         SPEC[📄 仕様書 / 要件定義書<br/>（Notion / Google Drive / GitHub）]
         ISSUE[🧾 チケット / ToDoリスト<br/>（PMエージェントからの指示）]
-        DOC[📘 ドキュメント / API仕様書]
     end
 
     %% --- 中央処理 ---
-    CA[💻 コーディングエージェント<br/>（Cursorによるコード生成・修正・レビュー）]
+    CA[💻 コーディングエージェント<br/>（Cursor）]
 
     %% --- 出力 ---
     subgraph Output["出力"]
@@ -173,7 +176,6 @@ flowchart LR
     %% --- 矢印（動作） ---
     SPEC -->|"仕様を読み取り実装計画を生成"| CA
     ISSUE -->|"タスク内容を解析"| CA
-    DOC -->|"参照ドキュメントを解析"| CA
 
     CA -->|"コードを自動生成・更新"| CODE
     CA -->|"PRを作成・レビュー依頼"| PR
@@ -189,3 +191,49 @@ flowchart LR
   - 初回: 新規セッション作成 → コード生成 → セッションID保存
   - 2回目以降: セッションID再利用 → 既存コード更新（連続的に改善）
 - scope別制御（`frontend/`、`backend/`、`test/`）→ GitHub PR自動作成
+
+
+## フロントエンド・デザインエージェント
+
+
+```mermaid
+flowchart LR
+    %% 入力
+    subgraph Input["入力"]
+        SPEC[仕様書 / 要件定義書]
+        ISSUE[チケット / ToDoリスト]
+        DSYS[既存のデザイン・コンポーネント]
+        REFDESIGN[参考デザイン]
+        STORY[絵コンテ / スケッチ / ユーザーストーリー]
+    end
+
+    %% 中央処理
+    DA[フロントエンド・デザインエージェント]
+
+    %% 出力
+    subgraph Output["出力"]
+        FIG[Figmaファイル<br/>ワイヤー / UIフロー / モック / プロトタイプ]
+        ASSET[アセット書き出し<br/>画像 / アイコン / ロッティ]
+        DOCS[ガイドライン / コンポーネント辞書]
+    end
+
+    %% 矢印（処理内容）
+    DSYS -->|"既存ルール/コンポーネント参照"| DA
+    SPEC -->|"仕様を読み取り設計方針作成"| DA
+    ISSUE -->|"タスク内容を分解・分析"| DA
+    REFDESIGN -->|"参考デザインを反映"| DA
+    STORY -->|"ユーザーシナリオに基づき構成"| DA
+
+    DA -->|"ワイヤー / UIフロー / プロトタイプ生成"| FIG
+    DA -->|"アセットを最適化・書き出し"| ASSET
+    DA -->|"デザインルールを文書化"| DOCS
+```
+
+デザインをきっちり決める必要がある社外に展開するWEBサイト・CMS・ECサイトなどは、こちらのデザインエージェントを使う。
+
+
+## エージェントの共通実装
+
+
+
+
