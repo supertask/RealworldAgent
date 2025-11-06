@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>議事録エージェント - プロトタイプ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1>🤖 議事録エージェント</h1>
+                <p class="subtitle">AI動画解析による自動議事録生成 (プロトタイプ)</p>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- ステップ表示 -->
+            <div class="progress-steps">
+                <div class="step active" id="step-1">
+                    <div class="step-number">1</div>
+                    <div class="step-title">動画ファイルを選択</div>
+                </div>
+                <div class="step" id="step-2">
+                    <div class="step-number">2</div>
+                    <div class="step-title">処理中...</div>
+                </div>
+                <div class="step" id="step-3">
+                    <div class="step-number">3</div>
+                    <div class="step-title">議事録を生成</div>
+                </div>
+                <div class="step" id="step-4">
+                    <div class="step-number">4</div>
+                    <div class="step-title">ダウンロード</div>
+                </div>
+            </div>
+
+            <!-- アップロードセクション -->
+            <section class="section upload-section" id="upload-section">
+                <h2>ステップ 1: 動画ファイルを選択</h2>
+                
+                <div class="upload-area" id="upload-area">
+                    <div class="upload-icon">📹</div>
+                    <h3>動画ファイルを選択してください</h3>
+                    <p style="margin: 20px 0;">
+                        <input 
+                            type="file" 
+                            id="video-input" 
+                            accept=".mp4,.mov,.avi,.mkv,.webm"
+                            style="display: block; margin: 0 auto; padding: 10px;"
+                        >
+                    </p>
+                </div>
+
+                <div class="supported-formats">
+                    <strong>対応形式:</strong> MP4, MOV, AVI, MKV, WebM (最大 500MB)
+                </div>
+
+                <div id="file-info" class="file-info" style="display: none;">
+                    <div class="file-preview">
+                        <video id="video-preview" controls style="max-width: 100%; height: 300px;"></video>
+                    </div>
+                    <div class="file-details">
+                        <p><strong>ファイル名:</strong> <span id="file-name"></span></p>
+                        <p><strong>ファイルサイズ:</strong> <span id="file-size"></span></p>
+                    </div>
+                </div>
+
+                <button id="process-btn" class="btn btn-success" style="display: none;">
+                    処理を開始
+                </button>
+            </section>
+
+            <!-- 処理中セクション -->
+            <section class="section processing-section" id="processing-section" style="display: none;">
+                <h2>ステップ 2: 処理中...</h2>
+                <div class="spinner"></div>
+                <p>動画を解析しています。この処理には数秒～数分かかる場合があります。</p>
+                <div class="processing-steps">
+                    <div class="processing-step" id="step-audio">
+                        <span class="status-icon">⏳</span>
+                        <span>音声抽出</span>
+                    </div>
+                    <div class="processing-step" id="step-transcribe">
+                        <span class="status-icon">⏳</span>
+                        <span>文字起こし (Whisper)</span>
+                    </div>
+                    <div class="processing-step" id="step-keyframes">
+                        <span class="status-icon">⏳</span>
+                        <span>キーフレーム抽出</span>
+                    </div>
+                    <div class="processing-step" id="step-generate">
+                        <span class="status-icon">⏳</span>
+                        <span>議事録生成 (Qwen3-VL)</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 結果セクション -->
+            <section class="section result-section" id="result-section" style="display: none;">
+                <h2>ステップ 3 & 4: 生成された議事録</h2>
+                
+                <div class="result-tabs">
+                    <button class="tab-btn active" data-tab="preview">プレビュー</button>
+                    <button class="tab-btn" data-tab="minutes">議事録</button>
+                    <button class="tab-btn" data-tab="transcript">文字起こし</button>
+                    <button class="tab-btn" data-tab="json">JSON</button>
+                </div>
+
+                <!-- プレビュータブ -->
+                <div class="tab-content active" id="tab-preview">
+                    <div id="minutes-preview" class="minutes-preview"></div>
+                </div>
+
+                <!-- 議事録Markdownタブ -->
+                <div class="tab-content" id="tab-minutes">
+                    <textarea id="markdown-content" class="code-editor" readonly></textarea>
+                </div>
+
+                <!-- 文字起こしMarkdownタブ（新規） -->
+                <div class="tab-content" id="tab-transcript">
+                    <textarea id="transcript-content" class="code-editor" readonly></textarea>
+                </div>
+
+                <!-- JSONタブ -->
+                <div class="tab-content" id="tab-json">
+                    <textarea id="json-content" class="code-editor" readonly></textarea>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="download-md-btn" class="btn btn-primary">
+                        📥 ZIPでダウンロード（議事録・文字起こし・画像）
+                    </button>
+                    <button id="new-video-btn" class="btn btn-secondary">
+                        🔄 新しい動画を処理
+                    </button>
+                </div>
+            </section>
+
+            <!-- 出力一覧セクション -->
+            <section class="section history-section" id="history-section">
+                <h2>📋 生成済み議事録</h2>
+                <div id="outputs-list" class="outputs-list">
+                    <p>生成済み議事録がありません</p>
+                </div>
+            </section>
+        </main>
+
+        <!-- 情報パネル -->
+        <aside class="info-panel">
+            <h3>ℹ️ このプロトタイプについて</h3>
+            <div class="info-content">
+                <p>
+                    このアプリケーションは、Realworld Agent プロジェクトの<strong>議事録エージェント</strong>のプロトタイプです。
+                </p>
+                <h4>実装予定の機能:</h4>
+                <ul>
+                    <li>✅ 動画ファイルのアップロード</li>
+                    <li>🔄 音声抽出と文字起こし (Groq Whisper API)</li>
+                    <li>🖼️ キーフレーム検出</li>
+                    <li>🧠 マルチモーダルLLM (Qwen3-VL) による議事録生成</li>
+                    <li>📝 Markdown形式での保存</li>
+                    <li>☁️ Notion/GitHub/Google Drive への自動保存</li>
+                </ul>
+            </div>
+        </aside>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script>
+        // 初期ログ
+        console.log('✅ ページが読み込まれました - app.js を読み込み中...');
+    </script>
+</body>
+</html>
+

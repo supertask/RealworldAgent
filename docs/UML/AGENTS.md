@@ -55,10 +55,12 @@ flowchart LR
 ### 実現方法
 
 **オンライン（Google Meet）**:
-- Google Meet録画 → Google Drive保存 → Webhook検知
-- 並列処理: Google Docs議事録取得 + 動画からスクリーンショット抽出
-- スクリーンショット抽出: PySceneDetect（シーン検出） → DeepSeek OCR（テキスト抽出） → Vision API（図表検出） → LLM（重要度スコアリング）
-- 統合: 議事録 + スクリーンショット → GitHub保存（`{TargetDir}/Docs/Doc-{MeetingID}-{DateTime}.md`）
+1. Google Meet録画 → Google Drive保存 → Webhook検知
+2. Google Docs議事録取得 + 動画の音声からGroqCloudのWhisper Large v3 Turboを元に音声テキストとその経過時刻のリストを取得
+3. 動画データからシーン検出をし、シーン（画像）とその経過時刻のリストを取得（ただしN秒以内にシーンがM回以上切り替わる場合はパスとする。一旦、Nは0.5秒としMは3とする）。
+4. 2,3で取得した「音声テキストとその経過時刻のリスト」、「シーン（画像）とその経過時刻のリスト」を元に Qwen3-VL（Modalに置く）を使い、画像つきの議事録を作成していく
+    - 画像の重複が起こる可能性はあり得ると思うのでなるべくないように工夫する。一度にQwen3-VLに投げるのは厳しいと思うのでいい感じに分割して送るようにする。
+5. 画像つきの議事録 → Notion/GitHub/Driveに保存（`{TargetDir}/Docs/Doc-{MeetingID}-{DateTime}.md`）
 
 **対面（Mentra Glass/ioデバイス）**:
 - デバイス → Modal GPU Serverへリアルタイムストリーム送信（音声・映像）

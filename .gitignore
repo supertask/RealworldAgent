@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 
 docs/reference/MentraOS/
+design/mock/agents/meeting-minutes-agent/uploads/
+design/mock/agents/meeting-minutes-agent/outputs/
 .DS_Store
 
 # Node.js

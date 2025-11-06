@@ -1,4 +1,75 @@
-# RealworldAgent 開発ガイドライン
+# RealworldAgent 開発/デバッグ/ドキュメントなどのガイドライン。
+
+
+## ドキュメント
+
+### 📋 原則: 1プロジェクト = 1ドキュメント
+
+**必ず守ること:**
+- プロジェクト/モック/プロトタイプごとに **README.md 1ファイルのみ** 作成
+- `SETUP.md`, `GUIDE.md`, `QUICKSTART.md`, `ARCHITECTURE.md`, `ENV_SETUP.md`, `TESTING.md`, `DEBUG.md` などの **複数ファイルに分割しない**
+- 長くなっても構わない。セクション分けで対応する
+
+### ✅ 正しい例
+
+```
+project/
+├── README.md          # 全ての情報をここに集約
+├── app.py
+└── requirements.txt
+```
+
+### ❌ 間違った例
+
+```
+project/
+├── README.md
+├── SETUP.md           # ❌ 不要
+├── QUICKSTART.md      # ❌ 不要
+├── ARCHITECTURE.md    # ❌ 不要
+└── TROUBLESHOOTING.md # ❌ 不要
+```
+
+### 📝 README.md の構成例
+
+長いドキュメントは以下のようにセクション分けする：
+
+```markdown
+# プロジェクト名
+
+## 概要
+## クイックスタート
+## セットアップ
+## 使い方
+## アーキテクチャ
+## トラブルシューティング
+## ライセンス
+```
+
+### 🔧 例外（稀）
+
+以下の場合**のみ**複数ファイル可：
+- API仕様書が100ページ超える場合 → `API_REFERENCE.md`
+- 貢献ガイドが詳細な場合 → `CONTRIBUTING.md`
+- 変更履歴 → `CHANGELOG.md`
+
+**モック/プロトタイプでは例外は認めない。常にREADME.md 1ファイル。**
+
+### 🎨 図について
+
+- Mermaid形式で記述
+- README.md内に直接埋め込む
+- 別ファイル（`.drawio`, `.png` など）にしない
+
+### 🚫 デバッグ時の注意
+
+デバッグ・修正時に以下を作らない：
+- `DEBUG.md`
+- `FIXES.md`
+- `NOTES.md`
+- `TODO.md`
+
+必要ならREADME.mdに「## トラブルシューティング」セクションを追加。
 
 
 ## Modal GPU Server コスト最適化

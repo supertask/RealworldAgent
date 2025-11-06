@@ -193,5 +193,5 @@ if __name__ == '__main__':
     print("Server running at: http://localhost:5001")
     print("Press Ctrl+C to stop")
     print("=" * 60)
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    app.run(host='0.0.0.0', port=5100, debug=True)
 
