@@ -3,7 +3,7 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-reference/MentraOS/
+docs/reference/MentraOS/
 .DS_Store
 
 # Node.js
