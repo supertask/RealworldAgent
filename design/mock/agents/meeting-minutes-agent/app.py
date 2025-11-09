@@ -12,8 +12,48 @@ import tempfile
 import base64
 from dotenv import load_dotenv
 
+# TransNetV2関連インポート
+try:
+    import torch
+    import sys
+    import os
+    # transnetv2フォルダをパスに追加
+    transnetv2_path = os.path.join(os.path.dirname(__file__), 'transnetv2')
+    if transnetv2_path not in sys.path:
+        sys.path.insert(0, transnetv2_path)
+    from transnetv2_pytorch import TransNetV2
+    TRANSNETV2_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ TransNetV2が利用できません ({e}) - OpenCVベースのシーン検出を使用します")
+    TRANSNETV2_AVAILABLE = False
+
 # 環境変数を.envから読み込み
 load_dotenv()
+
+# 設定ファイルを読み込み
+def load_config():
+    """config.jsonから設定を読み込み"""
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ config.json読み込みエラー: {e}")
+        # デフォルト設定を返す
+        return {
+            "scene_detection_enabled": True,
+            "scene_detection_method": "transnetv2",
+            "transcription_enabled": True,
+            "minutes_generation_enabled": True,
+            "minutes_generation_method": "qwen3vl",
+            "duplicate_removal_enabled": True,
+            "image_saving_enabled": True
+        }
+
+DEBUG_CONFIG = load_config()
+print("🔧 デバッグ設定を読み込みました:")
+for key, value in DEBUG_CONFIG.items():
+    print(f"  {key}: {value}")
 
 app = Flask(__name__)
 
@@ -38,6 +78,10 @@ def allowed_file(filename):
 
 def extract_audio_from_video(video_path):
     """動画から音声を抽出"""
+    if not DEBUG_CONFIG["audio_extraction_enabled"]:
+        print("🚫 音声抽出: 無効化されています")
+        return None
+
     try:
         audio_path = os.path.join(tempfile.gettempdir(), 'audio_temp.wav')
         cmd = [
@@ -58,6 +102,16 @@ def extract_audio_from_video(video_path):
 
 def transcribe_audio(audio_path, video_path):
     """Groq Whisper APIで音声をテキストに変換"""
+    if not DEBUG_CONFIG["transcription_enabled"]:
+        print("🚫 文字起こし: 無効化されています - ダミーデータを使用")
+        return {
+            "text": "文字起こし機能が無効化されています。テスト用のダミーテキストです。",
+            "segments": [
+                {"start": 0.0, "end": 5.0, "text": "文字起こし機能が無効化されています。"},
+                {"start": 5.0, "end": 10.0, "text": "テスト用のダミーテキストです。"}
+            ]
+        }
+
     try:
         # Groq APIを使用
         import requests
@@ -112,6 +166,283 @@ def transcribe_audio(audio_path, video_path):
                 {"start": 10.0, "end": 15.0, "text": "次回までのアクションアイテムを確認し、担当者を決定しました。"}
             ]
         }
+
+
+def detect_scene_changes_transnetv2(video_path):
+    """TransNetV2でシーン変化を検出してキーフレームを抽出
+
+    Args:
+        video_path: 動画ファイルのパス
+
+    Returns:
+        キーフレームのリスト（タイムスタンプ、画像データ含む）
+    """
+    try:
+        if not TRANSNETV2_AVAILABLE:
+            print("⚠️ TransNetV2が利用できないため、OpenCVベースの検出にフォールバックします")
+            return detect_scene_changes_opencv(video_path)
+
+        # TransNetV2モデルの初期化（初回のみ）
+        if not hasattr(detect_scene_changes_transnetv2, '_model'):
+            print("🔄 TransNetV2モデルを初期化中...")
+            try:
+                detect_scene_changes_transnetv2._model = TransNetV2()
+
+                # トレーニング済み重みのロードを試行
+                weights_path = os.path.join(os.path.dirname(__file__), 'transnetv2', 'transnetv2-pytorch-weights.pth')
+                if os.path.exists(weights_path):
+                    state_dict = torch.load(weights_path, map_location='cpu')
+                    detect_scene_changes_transnetv2._model.load_state_dict(state_dict)
+                    print("✅ トレーニング済み重みをロードしました")
+                else:
+                    print("⚠️ トレーニング済み重みが見つからないため、ランダム初期化を使用します")
+
+                # Apple Silicon対応: MPS（Metal Performance Shaders）を使用
+                if torch.backends.mps.is_available():
+                    detect_scene_changes_transnetv2._model = detect_scene_changes_transnetv2._model.to('mps')
+                    print("✅ MPS（Apple Silicon GPU）を使用")
+                elif torch.cuda.is_available():
+                    detect_scene_changes_transnetv2._model = detect_scene_changes_transnetv2._model.cuda()
+                    print("✅ CUDA GPUを使用")
+                else:
+                    print("⚠️ GPUが利用できないためCPUを使用")
+
+                detect_scene_changes_transnetv2._model.eval()
+                print("✅ TransNetV2モデル初期化完了")
+
+            except Exception as e:
+                print(f"❌ TransNetV2モデル初期化エラー: {str(e)}")
+                print("⚠️ OpenCVベースの検出にフォールバックします")
+                return detect_scene_changes_opencv(video_path)
+
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        if fps == 0:
+            fps = 30  # デフォルト値
+
+        print(f"🎬 TransNetV2シーン検出開始: {total_frames}フレーム, {fps:.1f}fps")
+
+        # 動画からフレームを抽出
+        # TransNetV2用：27x48サイズで予測
+        # 保存用：元のサイズで保存
+        frames_small = []  # TransNetV2用（27x48）
+        frames_full = []   # 表示用（元のサイズ）
+        timestamps = []
+
+        frame_count = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # TransNetV2用にリサイズ（27x48, RGB）
+            frame_resized = cv2.resize(frame, (48, 27))  # 幅x高さ
+            frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+            
+            # 表示用：元サイズのRGB
+            frame_full_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            frames_small.append(frame_rgb)
+            frames_full.append(frame_full_rgb)
+            timestamps.append(frame_count / fps)
+            frame_count += 1
+
+        cap.release()
+
+        if not frames_small:
+            print("❌ フレーム抽出に失敗しました")
+            return []
+
+        frames_np = np.array(frames_small, dtype=np.uint8)  # [n_frames, 27, 48, 3]
+        print(f"✅ フレーム抽出完了: {len(frames_small)}フレーム")
+
+        # TransNetV2で予測
+        print("🧠 TransNetV2でシーン境界を検出中...")
+        with torch.no_grad():
+            # デバイス設定
+            device = next(detect_scene_changes_transnetv2._model.parameters()).device
+
+            # フレームをテンソルに変換
+            frames_tensor = torch.from_numpy(frames_np).unsqueeze(0)  # [1, n_frames, 27, 48, 3]
+            frames_tensor = frames_tensor.to(device)
+
+            # 予測実行
+            single_frame_pred, all_frame_pred = detect_scene_changes_transnetv2._model(frames_tensor)
+
+            # シグモイド適用
+            single_frame_pred = torch.sigmoid(single_frame_pred).cpu().numpy().flatten()
+            all_frame_pred = torch.sigmoid(all_frame_pred["many_hot"]).cpu().numpy().flatten()
+
+        # シーン境界を検出（single_frame_predを使用）
+        scene_boundaries = []
+        threshold = 0.5  # TransNetV2のデフォルト閾値
+
+        for i, pred in enumerate(single_frame_pred):
+            if pred > threshold:
+                scene_boundaries.append(i)
+
+        print(f"✅ シーン境界検出完了: {len(scene_boundaries)}個の境界を検出")
+
+        # シーン境界のフレームをキーフレームとして抽出
+        keyframes = []
+
+        # 最初のフレームは必ず含める
+        if frames_full:
+            frame_rgb = frames_full[0]
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            # 元のサイズを保持（リサイズしない、または最小限にする）
+            frame_display = cv2.resize(frame_bgr, (640, 360)) if frame_bgr.shape[1] > 640 else frame_bgr
+
+            _, buffer = cv2.imencode('.jpg', frame_display, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            frame_b64 = base64.b64encode(buffer).decode('utf-8')
+
+            keyframes.append({
+                "timestamp": timestamps[0],
+                "frame_index": 0,
+                "image_base64": frame_b64,
+                "image": f"keyframe_{len(keyframes):04d}.jpg"
+            })
+            print(f"✅ 0.0秒: 最初のキーフレーム抽出 ({frame_bgr.shape[1]}x{frame_bgr.shape[0]})")
+
+        # シーン境界のフレームをキーフレームとして追加
+        for boundary_idx in scene_boundaries:
+            if boundary_idx < len(frames_full):
+                frame_rgb = frames_full[boundary_idx]
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                # 元のサイズを保持
+                frame_display = cv2.resize(frame_bgr, (640, 360)) if frame_bgr.shape[1] > 640 else frame_bgr
+
+                _, buffer = cv2.imencode('.jpg', frame_display, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                frame_b64 = base64.b64encode(buffer).decode('utf-8')
+
+                keyframes.append({
+                    "timestamp": timestamps[boundary_idx],
+                    "frame_index": boundary_idx,
+                    "image_base64": frame_b64,
+                    "image": f"keyframe_{len(keyframes):04d}.jpg"
+                })
+                print(f"✅ {timestamps[boundary_idx]:.1f}秒: シーン境界キーフレーム抽出 (#{len(keyframes)}, サイズ: {frame_bgr.shape[1]}x{frame_bgr.shape[0]})")
+
+        print(f"🎬 TransNetV2シーン検出完了: {len(keyframes)}個のキーフレームを抽出")
+        return keyframes
+
+    except Exception as e:
+        print(f"❌ TransNetV2シーン検出エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print("⚠️ OpenCVベースの検出にフォールバックします")
+        return detect_scene_changes_opencv(video_path)
+
+
+def detect_scene_changes_opencv(video_path, threshold=30.0):
+    """OpenCVヒストグラム比較でシーン変化を検出（フォールバック用）
+
+    Args:
+        video_path: 動画ファイルのパス
+        threshold: シーン変化と判定するヒストグラム差分の閾値
+
+    Returns:
+        キーフレームのリスト（タイムスタンプ、画像データ含む）
+    """
+    try:
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        if fps == 0:
+            fps = 30  # デフォルト値
+
+        print(f"📹 OpenCVシーン検出開始: {total_frames}フレーム, {fps:.1f}fps")
+
+        keyframes = []
+        prev_frame = None
+        prev_hist = None
+        frame_count = 0
+
+        # シーン変化履歴（0.5秒以内に3回以上変化を検出するため）
+        scene_change_times = []
+        N_SECONDS = 0.5  # この秒数以内に
+        M_CHANGES = 3     # この回数以上変化したらスキップ
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            timestamp = frame_count / fps
+
+            if prev_frame is not None:
+                # ヒストグラム比較でシーン変化を検出
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                hist = cv2.calcHist([frame_gray], [0], None, [256], [0, 256])
+                hist = cv2.normalize(hist, hist).flatten()
+
+                if prev_hist is not None:
+                    # ヒストグラム差分を計算
+                    diff = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
+
+                    # 相関係数が低い（差が大きい）= シーン変化
+                    if diff < (1.0 - threshold / 100.0):
+                        # シーン変化を検出
+                        scene_change_times.append(timestamp)
+
+                        # N_SECONDS以内の変化回数をカウント
+                        recent_changes = [t for t in scene_change_times if timestamp - t <= N_SECONDS]
+
+                        if len(recent_changes) >= M_CHANGES:
+                            # 頻繁にシーンが切り替わる → スキップ
+                            print(f"⏭️  {timestamp:.1f}秒: 頻繁なシーン変化を検出 (スキップ)")
+                            # 古い変化履歴を削除
+                            scene_change_times = [t for t in scene_change_times if timestamp - t <= N_SECONDS]
+                        else:
+                            # キーフレームとして保存
+                            frame_resized = cv2.resize(frame, (640, 360))
+
+                            # 画像をBase64エンコード
+                            _, buffer = cv2.imencode('.jpg', frame_resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            frame_b64 = base64.b64encode(buffer).decode('utf-8')
+
+                            keyframes.append({
+                                "timestamp": timestamp,
+                                "frame_index": frame_count,
+                                "image_base64": frame_b64,
+                                "image": f"keyframe_{len(keyframes):04d}.jpg"
+                            })
+                            print(f"✅ {timestamp:.1f}秒: キーフレーム抽出 (#{len(keyframes)})")
+
+                prev_hist = hist
+            else:
+                # 最初のフレームは必ず保存
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                prev_hist = cv2.calcHist([frame_gray], [0], None, [256], [0, 256])
+                prev_hist = cv2.normalize(prev_hist, prev_hist).flatten()
+
+                frame_resized = cv2.resize(frame, (640, 360))
+                _, buffer = cv2.imencode('.jpg', frame_resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                frame_b64 = base64.b64encode(buffer).decode('utf-8')
+
+                keyframes.append({
+                    "timestamp": timestamp,
+                    "frame_index": frame_count,
+                    "image_base64": frame_b64,
+                    "image": f"keyframe_{len(keyframes):04d}.jpg"
+                })
+                print(f"✅ 0.0秒: 最初のキーフレーム抽出")
+
+            prev_frame = frame
+            frame_count += 1
+
+        cap.release()
+        print(f"🎬 OpenCVシーン検出完了: {len(keyframes)}個のキーフレームを抽出")
+        return keyframes
+
+    except Exception as e:
+        print(f"❌ OpenCVキーフレーム抽出エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 def detect_scene_changes(video_path, threshold=30.0):
@@ -227,11 +558,23 @@ def detect_scene_changes(video_path, threshold=30.0):
 
 
 def extract_keyframes(video_path, interval=5):
-    """動画からキーフレーム（画像）を抽出（後方互換用）
-    
-    シーン検出版を使用
+    """動画からキーフレーム（画像）を抽出
+
+    config.jsonの設定に基づいてシーン検出方法を選択
     """
-    return detect_scene_changes(video_path, threshold=30.0)
+    if not DEBUG_CONFIG["scene_detection_enabled"]:
+        print("🚫 シーン検出: 無効化されています")
+        return []
+
+    method = DEBUG_CONFIG["scene_detection_method"]
+
+    if method == "transnetv2":
+        return detect_scene_changes_transnetv2(video_path)
+    elif method == "opencv":
+        return detect_scene_changes_opencv(video_path)
+    else:
+        print(f"⚠️ 不明なシーン検出方法: {method} - TransNetV2を使用します")
+        return detect_scene_changes_transnetv2(video_path)
 
 
 def remove_duplicate_keyframes(keyframes, similarity_threshold=0.95):
@@ -244,6 +587,10 @@ def remove_duplicate_keyframes(keyframes, similarity_threshold=0.95):
     Returns:
         重複を削除したキーフレームリスト
     """
+    if not DEBUG_CONFIG["duplicate_removal_enabled"]:
+        print("🚫 重複画像削除: 無効化されています")
+        return keyframes
+
     if len(keyframes) <= 1:
         return keyframes
     
@@ -307,6 +654,17 @@ def generate_minutes_with_qwen3vl(transcript_data, keyframes):
     Returns:
         議事録データ
     """
+    if not DEBUG_CONFIG["minutes_generation_enabled"]:
+        print("🚫 議事録生成: 無効化されています - ダミーデータを使用")
+        return {
+            "title": "会議議事録（ダミー）",
+            "date": datetime.datetime.now().strftime("%Y年%m月%d日"),
+            "time": datetime.datetime.now().strftime("%H:%M"),
+            "summary": "議事録生成が無効化されています。テスト用のダミーデータです。",
+            "sections": [],
+            "keyframes_used": []
+        }
+
     import requests
     
     try:
@@ -644,13 +1002,21 @@ def save_keyframes_to_disk(keyframes, video_id, output_folder):
         output_folder: 出力先フォルダ
     
     Returns:
-        保存された画像ファイルのパスリスト
+        保存された画像ファイルのパスリスト、動画用サブフォルダパス
     """
+    if not DEBUG_CONFIG["image_saving_enabled"]:
+        print("🚫 画像保存: 無効化されています")
+        return [], None
+
     import base64
     import os
     
-    saved_images = []
+    # 動画ごとのサブフォルダを作成
     video_prefix = video_id.replace('.', '_')
+    video_subfolder = os.path.join(output_folder, video_prefix)
+    os.makedirs(video_subfolder, exist_ok=True)
+    
+    saved_images = []
     
     for idx, kf in enumerate(keyframes):
         image_b64 = kf.get('image_base64', '')
@@ -661,9 +1027,9 @@ def save_keyframes_to_disk(keyframes, video_id, output_folder):
             # Base64デコード
             image_data = base64.b64decode(image_b64)
             
-            # ファイル名を生成（video_id含む）
-            image_filename = f"{video_prefix}_keyframe_{idx:04d}.jpg"
-            image_path = os.path.join(output_folder, image_filename)
+            # ファイル名を生成（シンプルに）
+            image_filename = f"keyframe_{idx:04d}.jpg"
+            image_path = os.path.join(video_subfolder, image_filename)
             
             # 画像を保存
             with open(image_path, 'wb') as f:
@@ -674,14 +1040,14 @@ def save_keyframes_to_disk(keyframes, video_id, output_folder):
             kf['saved_path'] = image_path
             saved_images.append(image_path)
             
-            print(f"✅ 画像保存: {image_filename}")
+            print(f"✅ 画像保存: {video_prefix}/{image_filename}")
         
         except Exception as e:
             print(f"❌ 画像保存エラー (idx={idx}): {str(e)}")
             continue
     
-    print(f"📁 合計 {len(saved_images)} 枚の画像を保存")
-    return saved_images
+    print(f"📁 合計 {len(saved_images)} 枚の画像を保存（フォルダ: {video_prefix}/）")
+    return saved_images, video_subfolder
 
 
 def transcript_to_markdown(transcript_data, keyframes, video_id):
@@ -915,7 +1281,7 @@ def generate_minutes_endpoint(video_id):
         
         # キーフレーム画像を保存（ファイル名を更新）
         print("💾 キーフレーム画像を保存中...")
-        save_keyframes_to_disk(keyframes, video_id, app.config['OUTPUT_FOLDER'])
+        _, video_subfolder = save_keyframes_to_disk(keyframes, video_id, app.config['OUTPUT_FOLDER'])
         print(f"✅ キーフレーム画像保存完了")
         
         # 議事録生成（Qwen3-VL使用、エラー時はフォールバック）
@@ -923,10 +1289,13 @@ def generate_minutes_endpoint(video_id):
         minutes = generate_minutes_with_qwen3vl(transcript, keyframes)
         print(f"✅ 議事録生成完了")
         
+        # 保存先フォルダ（サブフォルダがない場合はoutputs直下）
+        save_folder = video_subfolder if video_subfolder else app.config['OUTPUT_FOLDER']
+        
         # 1. 議事録Markdownを生成
         minutes_markdown = minutes_to_markdown(minutes)
-        minutes_filename = f"minutes_{video_id.replace('.', '_')}.md"
-        minutes_path = os.path.join(app.config['OUTPUT_FOLDER'], minutes_filename)
+        minutes_filename = "minutes.md"
+        minutes_path = os.path.join(save_folder, minutes_filename)
         
         with open(minutes_path, 'w', encoding='utf-8') as f:
             f.write(minutes_markdown)
@@ -934,8 +1303,8 @@ def generate_minutes_endpoint(video_id):
         
         # 2. 文字起こしMarkdownを生成
         transcript_markdown = transcript_to_markdown(transcript, keyframes, video_id)
-        transcript_filename = f"transcript_{video_id.replace('.', '_')}.md"
-        transcript_path = os.path.join(app.config['OUTPUT_FOLDER'], transcript_filename)
+        transcript_filename = "transcript.md"
+        transcript_path = os.path.join(save_folder, transcript_filename)
         
         with open(transcript_path, 'w', encoding='utf-8') as f:
             f.write(transcript_markdown)
@@ -970,34 +1339,55 @@ def download_output(zip_filename):
         video_id = zip_filename.replace('output_', '').replace('.zip', '').replace('_', '.')
         video_prefix = video_id.replace('.', '_')
         
+        # 動画用サブフォルダを確認
+        video_subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+        
         # メモリ上にZIPファイルを作成
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            # 1. 議事録Markdownを追加
-            minutes_filename = f"minutes_{video_prefix}.md"
-            minutes_path = os.path.join(app.config['OUTPUT_FOLDER'], minutes_filename)
-            if os.path.exists(minutes_path):
-                zip_file.write(minutes_path, arcname=f"議事録_{video_prefix}.md")
-                print(f"✅ ZIP追加: {minutes_filename}")
-            
-            # 2. 文字起こしMarkdownを追加
-            transcript_filename = f"transcript_{video_prefix}.md"
-            transcript_path = os.path.join(app.config['OUTPUT_FOLDER'], transcript_filename)
-            if os.path.exists(transcript_path):
-                zip_file.write(transcript_path, arcname=f"文字起こし_{video_prefix}.md")
-                print(f"✅ ZIP追加: {transcript_filename}")
-            
-            # 3. 画像を追加
-            image_count = 0
-            for filename in os.listdir(app.config['OUTPUT_FOLDER']):
-                # このvideo_idの画像のみ
-                if filename.startswith(video_prefix) and filename.endswith('.jpg'):
-                    image_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
-                    zip_file.write(image_path, arcname=filename)
-                    image_count += 1
-            
-            print(f"✅ ZIP追加: {image_count}枚の画像")
+            # サブフォルダが存在する場合
+            if os.path.exists(video_subfolder):
+                # サブフォルダ内のすべてのファイルを追加
+                for filename in os.listdir(video_subfolder):
+                    file_path = os.path.join(video_subfolder, filename)
+                    
+                    if os.path.isfile(file_path):
+                        # ファイル名を日本語に変更
+                        if filename == "minutes.md":
+                            arcname = f"議事録.md"
+                        elif filename == "transcript.md":
+                            arcname = f"文字起こし.md"
+                        else:
+                            arcname = filename
+                        
+                        zip_file.write(file_path, arcname=arcname)
+                        print(f"✅ ZIP追加: {filename}")
+            else:
+                # レガシー形式：outputs直下のファイルを探す
+                # 1. 議事録Markdownを追加
+                minutes_filename = f"minutes_{video_prefix}.md"
+                minutes_path = os.path.join(app.config['OUTPUT_FOLDER'], minutes_filename)
+                if os.path.exists(minutes_path):
+                    zip_file.write(minutes_path, arcname=f"議事録_{video_prefix}.md")
+                    print(f"✅ ZIP追加: {minutes_filename}")
+                
+                # 2. 文字起こしMarkdownを追加
+                transcript_filename = f"transcript_{video_prefix}.md"
+                transcript_path = os.path.join(app.config['OUTPUT_FOLDER'], transcript_filename)
+                if os.path.exists(transcript_path):
+                    zip_file.write(transcript_path, arcname=f"文字起こし_{video_prefix}.md")
+                    print(f"✅ ZIP追加: {transcript_filename}")
+                
+                # 3. 画像を追加
+                image_count = 0
+                for filename in os.listdir(app.config['OUTPUT_FOLDER']):
+                    if filename.startswith(video_prefix) and filename.endswith('.jpg'):
+                        image_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+                        zip_file.write(image_path, arcname=filename)
+                        image_count += 1
+                
+                print(f"✅ ZIP追加: {image_count}枚の画像")
         
         # ZIPファイルをクライアントに送信
         zip_buffer.seek(0)
@@ -1025,6 +1415,50 @@ def download_minutes(filename):
         
         return send_file(file_path, as_attachment=True, mimetype='text/markdown')
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/debug-config', methods=['GET'])
+def get_debug_config():
+    """デバッグ設定をJSONで返す"""
+    try:
+        return jsonify(DEBUG_CONFIG)
+    except Exception as e:
+        print(f"❌ debug-config エラー: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/debug-info', methods=['GET'])
+def get_debug_info():
+    """デバッグ情報をJSONで返す"""
+    try:
+        debug_info = {
+            "transnetv2_available": TRANSNETV2_AVAILABLE,
+            "config": DEBUG_CONFIG,
+            "model_status": "未初期化"
+        }
+        
+        # TransNetV2モデルが初期化されているか確認
+        if TRANSNETV2_AVAILABLE:
+            if hasattr(detect_scene_changes_transnetv2, '_model'):
+                model = detect_scene_changes_transnetv2._model
+                weights_path = os.path.join(os.path.dirname(__file__), 'transnetv2', 'transnetv2-pytorch-weights.pth')
+                
+                debug_info["model_status"] = "初期化済み"
+                debug_info["model_info"] = {
+                    "device": str(next(model.parameters()).device),
+                    "weights_file": weights_path,
+                    "weights_exists": os.path.exists(weights_path),
+                    "weights_size_mb": os.path.getsize(weights_path) / (1024*1024) if os.path.exists(weights_path) else 0
+                }
+            else:
+                debug_info["model_status"] = "未初期化（初回実行時に初期化されます）"
+        
+        return jsonify(debug_info)
+    except Exception as e:
+        print(f"❌ debug-info エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 

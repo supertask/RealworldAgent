@@ -6,7 +6,8 @@ let appState = {
     minutesMarkdown: null,
     transcriptMarkdown: null,
     downloadUrl: null,
-    isProcessing: false
+    isProcessing: false,
+    debugConfig: null
 };
 
 // DOM要素
@@ -20,10 +21,23 @@ const resultSection = document.getElementById('result-section');
 const historySection = document.getElementById('history-section');
 
 // イベントリスナー設定
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadDebugConfig();
     setupEventListeners();
     loadOutputsList();
 });
+
+// config.jsonからデバッグ設定を読み込み
+async function loadDebugConfig() {
+    try {
+        // Flaskから設定を取得するAPIエンドポイントを追加する必要があります
+        // 以下は仮のローカルストレージ取得
+        console.log('🔧 デバッグ設定を読み込み中...');
+        // 後でバックエンドから取得するように変更
+    } catch (error) {
+        console.error('❌ デバッグ設定の読み込みエラー:', error);
+    }
+}
 
 function setupEventListeners() {
     // ファイルアップロード - シンプルな直接バインド
@@ -201,18 +215,51 @@ async function processVideo() {
 }
 
 async function simulateProcessingSteps() {
-    const steps = [
-        { id: 'step-audio', name: '音声抽出' },
-        { id: 'step-transcribe', name: '文字起こし' },
-        { id: 'step-keyframes', name: 'キーフレーム抽出' },
-        { id: 'step-generate', name: '議事録生成' }
-    ];
+    try {
+        // サーバーからconfig.jsonを取得
+        const response = await fetch('/api/debug-config');
+        const config = await response.json();
+        
+        const steps = [
+            { id: 'step-audio', name: '音声抽出', enabled: config.audio_extraction_enabled },
+            { id: 'step-transcribe', name: '文字起こし', enabled: config.transcription_enabled },
+            { id: 'step-keyframes', name: 'キーフレーム抽出', enabled: config.scene_detection_enabled },
+            { id: 'step-generate', name: '議事録生成', enabled: config.minutes_generation_enabled }
+        ];
 
-    for (const step of steps) {
-        const element = document.getElementById(step.id);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        element.classList.add('completed');
-        element.querySelector('.status-icon').textContent = '✓';
+        for (const step of steps) {
+            const element = document.getElementById(step.id);
+            
+            if (!step.enabled) {
+                // 無効な場合はスキップ表示
+                element.style.opacity = '0.5';
+                element.style.textDecoration = 'line-through';
+                element.querySelector('.status-icon').textContent = '—';
+                console.log(`⏭️  ${step.name}: スキップ (設定で無効化)`);
+                continue;
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            element.classList.add('completed');
+            element.querySelector('.status-icon').textContent = '✓';
+            console.log(`✅ ${step.name}: 完了`);
+        }
+    } catch (error) {
+        console.error('❌ デバッグ設定の取得に失敗:', error);
+        // フォールバック：すべてのステップを表示
+        const steps = [
+            { id: 'step-audio', name: '音声抽出' },
+            { id: 'step-transcribe', name: '文字起こし' },
+            { id: 'step-keyframes', name: 'キーフレーム抽出' },
+            { id: 'step-generate', name: '議事録生成' }
+        ];
+        
+        for (const step of steps) {
+            const element = document.getElementById(step.id);
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            element.classList.add('completed');
+            element.querySelector('.status-icon').textContent = '✓';
+        }
     }
 }
 

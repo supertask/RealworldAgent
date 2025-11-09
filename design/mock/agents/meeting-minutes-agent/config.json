@@ -1,0 +1,11 @@
+{
+  "audio_extraction_enabled": false,
+  "transcription_enabled": false,
+  "scene_detection_enabled": true,
+  "scene_detection_method": "transnetv2",
+  "minutes_generation_enabled": false,
+  "minutes_generation_method": "qwen3vl",
+  "duplicate_removal_enabled": false,
+  "image_saving_enabled": true
+}
+
