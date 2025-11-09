@@ -32,22 +32,36 @@ load_dotenv()
 
 # 設定ファイルを読み込み
 def load_config():
-    """config.jsonから設定を読み込み"""
-    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    """config.yamlから設定を読み込み"""
+    try:
+        import yaml
+    except ImportError:
+        print("⚠️ PyYAMLがインストールされていません")
+        print("  実行: pip install pyyaml")
+        import sys
+        sys.exit(1)
+    
+    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            return yaml.safe_load(f)
     except Exception as e:
-        print(f"⚠️ config.json読み込みエラー: {e}")
+        print(f"⚠️ config.yaml読み込みエラー: {e}")
         # デフォルト設定を返す
         return {
+            "audio_extraction_enabled": False,
+            "transcription_enabled": False,
             "scene_detection_enabled": True,
             "scene_detection_method": "transnetv2",
-            "transcription_enabled": True,
-            "minutes_generation_enabled": True,
+            "minutes_generation_enabled": False,
             "minutes_generation_method": "qwen3vl",
-            "duplicate_removal_enabled": True,
-            "image_saving_enabled": True
+            "duplicate_removal_enabled": False,
+            "image_saving_enabled": True,
+            "transnetv2": {
+                "detection_threshold": 0.5,
+                "use_frame_similarity": True,
+                "use_color_histograms": True
+            }
         }
 
 DEBUG_CONFIG = load_config()
@@ -277,7 +291,8 @@ def detect_scene_changes_transnetv2(video_path):
 
         # シーン境界を検出（single_frame_predを使用）
         scene_boundaries = []
-        threshold = 0.5  # TransNetV2のデフォルト閾値
+        # 設定からTransNetV2の検出閾値を取得
+        threshold = DEBUG_CONFIG.get('transnetv2', {}).get('detection_threshold', 0.5)
 
         for i, pred in enumerate(single_frame_pred):
             if pred > threshold:
