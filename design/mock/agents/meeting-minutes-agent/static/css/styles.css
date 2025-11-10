@@ -327,6 +327,60 @@ body {
     content: '✓';
 }
 
+/* アノテーション進捗 */
+.annotation-progress {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    text-align: left;
+}
+
+.progress-bar-container {
+    width: 100%;
+    height: 8px;
+    background: var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-color), var(--primary-light));
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.progress-text {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin: 0.5rem 0;
+}
+
+.progress-details {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.progress-details summary {
+    cursor: pointer;
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.progress-details ul {
+    margin-top: 0.5rem;
+    padding-left: 1.5rem;
+    list-style-type: disc;
+}
+
+.progress-details li {
+    margin: 0.25rem 0;
+    color: var(--text-secondary);
+}
+
 /* 結果セクション */
 .result-tabs {
     display: flex;

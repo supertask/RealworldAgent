@@ -197,6 +197,11 @@ async function processVideo() {
         console.log('⏳ 処理ステップをシミュレート中...');
         await simulateProcessingSteps();
 
+        // アノテーション進捗監視（有効な場合）
+        if (appState.videoId) {
+            startAnnotationProgressPolling(appState.videoId);
+        }
+
         // 議事録生成
         console.log('🧠 議事録を生成中...');
         await generateMinutes();
@@ -224,6 +229,7 @@ async function simulateProcessingSteps() {
             { id: 'step-audio', name: '音声抽出', enabled: config.audio_extraction_enabled },
             { id: 'step-transcribe', name: '文字起こし', enabled: config.transcription_enabled },
             { id: 'step-keyframes', name: 'キーフレーム抽出', enabled: config.scene_detection_enabled },
+            { id: 'step-annotation', name: 'アノテーション', enabled: config.annotation_enabled },
             { id: 'step-generate', name: '議事録生成', enabled: config.minutes_generation_enabled }
         ];
 
@@ -465,6 +471,62 @@ function updateProgressStep(stepNumber) {
     }
 
     document.getElementById(`step-${stepNumber}`).classList.add('active');
+}
+
+// アノテーション進捗のポーリング
+let annotationProgressInterval = null;
+
+function startAnnotationProgressPolling(videoId) {
+    console.log('📊 アノテーション進捗監視開始:', videoId);
+    
+    const annotationStep = document.getElementById('step-annotation');
+    const progressContainer = document.getElementById('annotation-progress');
+    const progressBar = document.getElementById('progress-bar-fill');
+    const progressText = document.getElementById('progress-text');
+    const detailsList = document.getElementById('progress-details-list');
+    
+    if (!annotationStep || !progressContainer) {
+        console.warn('⚠️ アノテーション進捗要素が見つかりません');
+        return;
+    }
+    
+    // 進捗表示を有効化
+    progressContainer.style.display = 'block';
+    annotationStep.classList.add('active');
+    
+    // ポーリング開始
+    annotationProgressInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/annotation-progress/${videoId}`);
+            const progress = await response.json();
+            
+            if (progress.status === 'in_progress' || progress.status === 'completed') {
+                // 進捗バー更新
+                const percentage = progress.percentage || 0;
+                progressBar.style.width = percentage + '%';
+                
+                // テキスト更新
+                progressText.textContent = 
+                    `バッチ ${progress.current_batch} / ${progress.total_batches} 処理中 (${progress.completed_frames}/${progress.total_frames}フレーム完了)`;
+                
+                // ステップアイコン更新
+                if (progress.status === 'completed') {
+                    annotationStep.classList.add('completed');
+                    annotationStep.querySelector('.status-icon').textContent = '✓';
+                    clearInterval(annotationProgressInterval);
+                    annotationProgressInterval = null;
+                    console.log('✅ アノテーション完了');
+                } else {
+                    annotationStep.querySelector('.status-icon').textContent = '⏳';
+                }
+            } else if (progress.status === 'not_started') {
+                // まだ開始していない
+                progressText.textContent = 'アノテーション待機中...';
+            }
+        } catch (error) {
+            console.error('❌ 進捗取得エラー:', error);
+        }
+    }, 1000); // 1秒ごとにポーリング
 }
 
 // 定期的に出力一覧を更新

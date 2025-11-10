@@ -90,6 +90,20 @@
                         <span class="status-icon">⏳</span>
                         <span>キーフレーム抽出</span>
                     </div>
+                    <div class="processing-step" id="step-annotation">
+                        <span class="status-icon">⏳</span>
+                        <span>アノテーション中...</span>
+                        <div class="annotation-progress" id="annotation-progress" style="display: none;">
+                            <div class="progress-bar-container">
+                                <div class="progress-bar-fill" id="progress-bar-fill"></div>
+                            </div>
+                            <p class="progress-text" id="progress-text">バッチ 0 / 0 処理中 (0/0フレーム完了)</p>
+                            <details class="progress-details">
+                                <summary>処理詳細</summary>
+                                <ul id="progress-details-list"></ul>
+                            </details>
+                        </div>
+                    </div>
                     <div class="processing-step" id="step-generate">
                         <span class="status-icon">⏳</span>
                         <span>議事録生成 (Qwen3-VL)</span>

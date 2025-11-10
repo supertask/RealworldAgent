@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import base64
 from dotenv import load_dotenv
+import requests
 
 # TransNetV2関連インポート
 try:
@@ -1065,6 +1066,518 @@ def save_keyframes_to_disk(keyframes, video_id, output_folder):
     return saved_images, video_subfolder
 
 
+def filter_keyframes_by_time_gap(keyframes, video_path, min_time_gap_seconds=0.5):
+    """時間差が短すぎるフレームをフィルタリング
+    
+    Args:
+        keyframes: キーフレームリスト（timestamp, frame_index含む）
+        video_path: 動画ファイルパス（FPS取得用）
+        min_time_gap_seconds: 最小時間差（秒）
+    
+    Returns:
+        フィルタリング後のキーフレームリスト
+    """
+    if not keyframes or len(keyframes) == 0:
+        return keyframes
+    
+    # FPSを取得
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    
+    if fps == 0:
+        fps = 30  # デフォルト値
+    
+    print(f"🔍 フレームフィルタリング開始: {len(keyframes)}フレーム, FPS={fps:.1f}, 最小時間差={min_time_gap_seconds}秒")
+    
+    filtered_keyframes = []
+    last_included_frame = None
+    removed_count = 0
+    
+    for frame in keyframes:
+        if last_included_frame is None:
+            # 最初のフレームは常に含める
+            filtered_keyframes.append(frame)
+            last_included_frame = frame
+        else:
+            # フレーム間の時間差を計算
+            time_gap_seconds = abs(frame.get('timestamp', 0) - last_included_frame.get('timestamp', 0))
+            
+            if time_gap_seconds >= min_time_gap_seconds:
+                filtered_keyframes.append(frame)
+                last_included_frame = frame
+            else:
+                # 短すぎるフレームは除外
+                removed_count += 1
+                print(f"⏭️  フレーム除外: 時間差{time_gap_seconds:.3f}秒 < 最小{min_time_gap_seconds}秒 (フレーム#{frame.get('frame_index', '?')})")
+    
+    print(f"✅ フレームフィルタリング完了: {len(filtered_keyframes)}/{len(keyframes)}フレーム保持 ({removed_count}フレーム削除)")
+    
+    return filtered_keyframes
+
+
+def generate_frame_metadata(keyframes, video_path, video_id, output_folder):
+    """フレームメタデータJSONを生成
+    
+    Args:
+        keyframes: キーフレームリスト（timestamp, frame_index, image含む）
+        video_path: 動画ファイルパス
+        video_id: ビデオID
+        output_folder: 出力フォルダ
+    
+    Returns:
+        メタデータファイルパス
+    """
+    # FPSと動画情報を取得
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration_seconds = total_frames / fps if fps > 0 else 0
+    cap.release()
+    
+    if fps == 0:
+        fps = 30  # デフォルト値
+    
+    # 動画用サブフォルダを取得
+    video_prefix = video_id.replace('.', '_')
+    video_subfolder = os.path.join(output_folder, video_prefix)
+    
+    # メタデータ構造を構築
+    metadata = {
+        "video_info": {
+            "filename": video_id,
+            "duration_seconds": duration_seconds,
+            "fps": fps,
+            "total_frames": total_frames
+        },
+        "filtering_applied": {
+            "enabled": True,
+            "min_time_gap_seconds": DEBUG_CONFIG.get("filtering_min_time_gap_seconds", 0.5)
+        },
+        "keyframes": []
+    }
+    
+    # キーフレーム情報を追加
+    for idx, kf in enumerate(keyframes):
+        frame_number = kf.get('frame_index', 0)
+        image_path = kf.get('image', f'keyframe_{idx:04d}.jpg')
+        scene_score = kf.get('scene_score', None)
+        
+        # keyframesにidを追加（まだない場合）
+        if 'id' not in kf:
+            kf['id'] = idx + 1
+        
+        frame_data = {
+            "id": kf.get('id', idx + 1),
+            "frame_number": frame_number,
+            "image_path": image_path,
+        }
+        
+        if scene_score is not None:
+            frame_data["scene_score"] = scene_score
+        
+        metadata["keyframes"].append(frame_data)
+    
+    # JSONファイルに保存
+    metadata_path = os.path.join(video_subfolder, 'frame_metadata.json')
+    os.makedirs(video_subfolder, exist_ok=True)
+    
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ フレームメタデータ保存: {metadata_path}")
+    
+    return metadata_path
+
+
+def generate_batch_plan(keyframes, video_subfolder, max_images_per_batch=6, overlap_frames=1):
+    """バッチアノテーションプランを生成（オーバーラップ戦略）
+    
+    Args:
+        keyframes: キーフレームリスト（frame_number, image含む）
+        video_subfolder: 出力フォルダ
+        max_images_per_batch: バッチあたり最大画像数
+        overlap_frames: オーバーラップするフレーム数
+    
+    Returns:
+        バッチプランファイルパス
+    """
+    if not keyframes or len(keyframes) == 0:
+        print("⚠️ キーフレームがありません - バッチプランをスキップ")
+        return None
+    
+    print(f"📦 バッチプラン生成開始: {len(keyframes)}フレーム, 最大{max_images_per_batch}枚/バッチ, オーバーラップ{overlap_frames}フレーム")
+    
+    # keyframesにidを追加（まだない場合）
+    for idx, kf in enumerate(keyframes):
+        if 'id' not in kf:
+            kf['id'] = idx + 1
+        if 'image_path' not in kf:
+            kf['image_path'] = kf.get('image', f'keyframe_{idx:04d}.jpg')
+    
+    batches = []
+    batch_id = 1
+    i = 0
+    
+    while i < len(keyframes):
+        # 現在のバッチに含めるフレームを決定
+        batch_frames = []
+        
+        # 最初のバッチ以外は、前のバッチの最後のフレームをオーバーラップとして含める
+        if batch_id > 1 and i > 0:
+            # 前のバッチの最後のフレームを追加
+            prev_last_frame = keyframes[i - 1]
+            batch_frames.append(prev_last_frame)
+        
+        # 新しいフレームを追加（最大数まで）
+        while len(batch_frames) < max_images_per_batch and i < len(keyframes):
+            batch_frames.append(keyframes[i])
+            i += 1
+        
+        if not batch_frames:
+            break
+        
+        # バッチ情報を構築
+        frame_ids = [f.get('id', idx + 1) for idx, f in enumerate(batch_frames)]
+        image_paths = [f.get('image_path', f.get('image', f'keyframe_{idx:04d}.jpg')) for idx, f in enumerate(batch_frames)]
+        
+        # 時間範囲を計算
+        timestamps = [f.get('timestamp', 0) for f in batch_frames if 'timestamp' in f]
+        time_range_seconds = [min(timestamps), max(timestamps)] if timestamps else [0, 0]
+        
+        # フレーム範囲を計算
+        frame_numbers = [f.get('frame_number', 0) for f in batch_frames]
+        frame_range = [min(frame_numbers), max(frame_numbers)] if frame_numbers else [0, 0]
+        
+        batch = {
+            "batch_id": batch_id,
+            "frame_ids": frame_ids,
+            "image_paths": image_paths,
+            "time_range_seconds": time_range_seconds,
+            "frame_range": frame_range,
+            "processing_order": batch_id
+        }
+        
+        batches.append(batch)
+        batch_id += 1
+    
+    # バッチプラン構造を構築
+    batch_plan = {
+        "batching_config": {
+            "strategy": "temporal_window_with_overlap",
+            "overlap_frames": overlap_frames,
+            "max_images_per_batch": max_images_per_batch,
+            "lm_studio_config": {
+                "endpoint": DEBUG_CONFIG.get("lm_studio_endpoint", "http://localhost:1234/v1/chat/completions"),
+                "model": DEBUG_CONFIG.get("lm_studio_model", "unsloth/Qwen3-VL-8B-Instruct"),
+                "max_tokens": 512,
+                "temperature": 0.7
+            }
+        },
+        "batches": batches
+    }
+    
+    # JSONファイルに保存
+    batch_plan_path = os.path.join(video_subfolder, 'batch_annotation_plan.json')
+    
+    with open(batch_plan_path, 'w', encoding='utf-8') as f:
+        json.dump(batch_plan, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ バッチプラン保存: {batch_plan_path} ({len(batches)}バッチ)")
+    
+    return batch_plan_path
+
+
+def annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder):
+    """LM Studio Qwen3-VL 8Bで画像をアノテーション
+    
+    Args:
+        image_paths: 画像ファイルパスのリスト
+        batch_id: バッチID
+        video_subfolder: 出力フォルダ
+    
+    Returns:
+        アノテーション結果のリスト
+    """
+    if not DEBUG_CONFIG.get("annotation_enabled", False):
+        print("🚫 アノテーション: 無効化されています")
+        return []
+    
+    endpoint = DEBUG_CONFIG.get("lm_studio_endpoint", "http://localhost:1234/v1/chat/completions")
+    model = DEBUG_CONFIG.get("lm_studio_model", "unsloth/Qwen3-VL-8B-Instruct")
+    
+    print(f"🤖 LM Studioアノテーション開始: バッチ{batch_id}, {len(image_paths)}枚")
+    
+    # 接続確認（最初の1回だけ）
+    print(f"🔍 LM Studio接続確認中: {endpoint}")
+    try:
+        # ヘルスチェック用の軽量リクエスト
+        test_response = requests.get(endpoint.replace('/v1/chat/completions', '/health'), timeout=5)
+        print(f"✅ LM Studio接続確認成功")
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ LM Studio接続確認失敗: {str(e)}")
+        print(f"💡 ヒント: LM Studioが起動しているか確認してください")
+        print(f"   - エンドポイント: {endpoint}")
+        print(f"   - モデル: {model}")
+        # 接続エラーでも処理は続行（個別リクエストでリトライするため）
+    
+    results = []
+    
+    for idx, image_path in enumerate(image_paths):
+        try:
+            # 画像をBase64エンコード
+            full_image_path = os.path.join(video_subfolder, image_path)
+            if not os.path.exists(full_image_path):
+                print(f"⚠️ 画像が見つかりません: {full_image_path}")
+                results.append({
+                    "status": "error",
+                    "readable": False,
+                    "reason": f"画像ファイルが見つかりません: {image_path}",
+                    "content": None
+                })
+                continue
+            
+            with open(full_image_path, 'rb') as f:
+                image_data = f.read()
+                image_b64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # LM Studioに送信
+            prompt = """この画像を詳細に説明してください。以下のJSON形式で返してください:
+{
+  "scene": "シーンの説明",
+  "objects": ["検出されたオブジェクト1", "オブジェクト2"],
+  "text": [
+    {
+      "content": "検出されたテキスト",
+      "position": "center|upper_left|lower_center|etc",
+      "type": "document|slide_title|slide_content|speech_bubble|etc"
+    }
+  ],
+  "speaker_count": 人数,
+  "visual_changes": ["前のフレームからの変化1", "変化2"]
+}"""
+            
+            # リトライ処理（最大3回）
+            max_retries = 3
+            retry_delay = 2  # 秒
+            response = None
+            
+            for retry_count in range(max_retries):
+                try:
+                    response = requests.post(
+                        endpoint,
+                        json={
+                            "model": model,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": prompt},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:image/jpeg;base64,{image_b64}"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ],
+                            "max_tokens": 512,
+                            "temperature": 0.7
+                        },
+                        timeout=60
+                    )
+                    # 成功したらループを抜ける
+                    break
+                except requests.exceptions.ConnectionError as e:
+                    if retry_count < max_retries - 1:
+                        print(f"⚠️ 接続エラー (リトライ {retry_count + 1}/{max_retries}): {str(e)}")
+                        import time
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # 最後のリトライでも失敗
+                        raise
+                except requests.exceptions.RequestException as e:
+                    # 接続エラー以外は即座に再スロー
+                    raise
+            
+            if response is None:
+                raise requests.exceptions.RequestException("リトライ後も接続に失敗しました")
+            
+            if response.status_code == 200:
+                content = response.json()['choices'][0]['message']['content']
+                
+                # JSON形式を抽出
+                try:
+                    if "{" in content and "}" in content:
+                        json_start = content.find("{")
+                        json_end = content.rfind("}") + 1
+                        json_str = content[json_start:json_end]
+                        annotation_data = json.loads(json_str)
+                        
+                        results.append({
+                            "status": "success",
+                            "readable": True,
+                            "content": annotation_data,
+                            "raw_response": content
+                        })
+                        print(f"✅ 画像{idx+1}/{len(image_paths)}: アノテーション成功")
+                    else:
+                        raise ValueError("JSON形式が見つかりません")
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ JSON解析エラー: {str(e)}")
+                    results.append({
+                        "status": "partial_failure",
+                        "readable": False,
+                        "reason": f"JSON解析エラー: {str(e)}",
+                        "raw_response": content,
+                        "content": None
+                    })
+            else:
+                print(f"❌ LM Studio APIエラー: {response.status_code}")
+                results.append({
+                    "status": "error",
+                    "readable": False,
+                    "reason": f"LM Studio APIエラー: {response.status_code}",
+                    "content": None
+                })
+        
+        except requests.exceptions.RequestException as e:
+            print(f"❌ リクエストエラー: {str(e)}")
+            results.append({
+                "status": "error",
+                "readable": False,
+                "reason": f"リクエストエラー: {str(e)}",
+                "content": None
+            })
+        except Exception as e:
+            print(f"❌ 予期しないエラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            results.append({
+                "status": "error",
+                "readable": False,
+                "reason": f"予期しないエラー: {str(e)}",
+                "content": None
+            })
+    
+    print(f"✅ バッチ{batch_id}アノテーション完了: {len([r for r in results if r['status'] == 'success'])}/{len(results)}成功")
+    
+    return results
+
+
+def generate_image_annotations(batch_plan_path, video_subfolder, keyframes):
+    """アノテーション結果を統合してimage_annotations.jsonを生成
+    
+    Args:
+        batch_plan_path: バッチプランファイルパス
+        video_subfolder: 出力フォルダ
+        keyframes: キーフレームリスト（メタデータ用）
+    
+    Returns:
+        アノテーションファイルパス
+    """
+    if not os.path.exists(batch_plan_path):
+        print("⚠️ バッチプランファイルが見つかりません")
+        return None
+    
+    # バッチプランを読み込み
+    with open(batch_plan_path, 'r', encoding='utf-8') as f:
+        batch_plan = json.load(f)
+    
+    print(f"📝 アノテーション結果統合開始: {len(batch_plan['batches'])}バッチ")
+    
+    annotations = []
+    frame_id_to_keyframe = {kf.get('id', idx+1): kf for idx, kf in enumerate(keyframes)}
+    
+    # 各バッチのアノテーション結果を読み込み
+    for batch in batch_plan['batches']:
+        batch_id = batch['batch_id']
+        frame_ids = batch['frame_ids']
+        image_paths = batch['image_paths']
+        
+        # バッチごとのアノテーション結果ファイルを読み込み（存在する場合）
+        batch_result_path = os.path.join(video_subfolder, f'batch_{batch_id}_results.json')
+        
+        if os.path.exists(batch_result_path):
+            with open(batch_result_path, 'r', encoding='utf-8') as f:
+                batch_results = json.load(f)
+        else:
+            print(f"⚠️ バッチ{batch_id}の結果ファイルが見つかりません: {batch_result_path}")
+            continue
+        
+        # 各フレームのアノテーションを構築
+        for idx, frame_id in enumerate(frame_ids):
+            if idx >= len(batch_results):
+                continue
+            
+            result = batch_results[idx]
+            keyframe = frame_id_to_keyframe.get(frame_id, {})
+            
+            annotation = {
+                "id": frame_id,
+                "frame_number": keyframe.get('frame_number', 0),
+                "image_path": image_paths[idx] if idx < len(image_paths) else f'keyframe_{frame_id:04d}.jpg',
+                "quality": {
+                    "status": result.get("status", "unknown"),
+                    "readable": result.get("readable", False)
+                },
+                "annotation": {}
+            }
+            
+            # 品質情報を追加
+            if result.get("reason"):
+                annotation["quality"]["reason"] = result["reason"]
+            
+            # アノテーション内容を追加
+            if result.get("status") == "success" and result.get("content"):
+                content = result["content"]
+                annotation["annotation"] = {
+                    "scene": content.get("scene", ""),
+                    "objects": content.get("objects", []),
+                    "text": content.get("text", []),
+                    "speaker_count": content.get("speaker_count"),
+                    "visual_changes": content.get("visual_changes", [])
+                }
+            else:
+                # エラー時は空のアノテーション
+                annotation["annotation"] = {
+                    "scene": "判定不可" if not result.get("readable") else "",
+                    "objects": [],
+                    "text": [],
+                    "speaker_count": None,
+                    "visual_changes": []
+                }
+            
+            # 処理メタデータ
+            annotation["processing_metadata"] = {
+                "batch_id": batch_id,
+                "skip_in_transcript": not result.get("readable", False)
+            }
+            
+            annotations.append(annotation)
+    
+    # アノテーション結果構造を構築
+    annotation_data = {
+        "lm_studio_config": {
+            "model": batch_plan["batching_config"]["lm_studio_config"]["model"],
+            "endpoint": batch_plan["batching_config"]["lm_studio_config"]["endpoint"]
+        },
+        "annotations": annotations
+    }
+    
+    # JSONファイルに保存
+    annotation_path = os.path.join(video_subfolder, 'image_annotations.json')
+    
+    with open(annotation_path, 'w', encoding='utf-8') as f:
+        json.dump(annotation_data, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ アノテーション結果保存: {annotation_path} ({len(annotations)}フレーム)")
+    
+    return annotation_path
+
+
 def transcript_to_markdown(transcript_data, keyframes, video_id):
     """文字起こしをMarkdown形式に変換（タイムスタンプ + 画像）
     
@@ -1294,10 +1807,84 @@ def generate_minutes_endpoint(video_id):
         # 出力フォルダを作成
         os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
         
+        # フレームフィルタリング（時間差 < 0.5秒のフレーム削除）
+        original_keyframe_count = len(keyframes)
+        min_time_gap = DEBUG_CONFIG.get("filtering_min_time_gap_seconds", 0.5)
+        filtering_enabled = DEBUG_CONFIG.get("filtering_enabled", True)
+        
+        if filtering_enabled:
+            print(f"🔍 フレームフィルタリング中... (最小時間差: {min_time_gap}秒)")
+            print(f"   フィルタリング前: {original_keyframe_count}フレーム")
+            filtered_keyframes = filter_keyframes_by_time_gap(keyframes, video_path, min_time_gap)
+            print(f"   フィルタリング後: {len(filtered_keyframes)}フレーム (削除: {original_keyframe_count - len(filtered_keyframes)}フレーム)")
+            keyframes = filtered_keyframes
+        else:
+            print(f"🚫 フレームフィルタリング: 無効化されています ({original_keyframe_count}フレーム保持)")
+        
         # キーフレーム画像を保存（ファイル名を更新）
         print("💾 キーフレーム画像を保存中...")
         _, video_subfolder = save_keyframes_to_disk(keyframes, video_id, app.config['OUTPUT_FOLDER'])
         print(f"✅ キーフレーム画像保存完了")
+        
+        # フレームメタデータ生成
+        print("📋 フレームメタデータ生成中...")
+        generate_frame_metadata(keyframes, video_path, video_id, app.config['OUTPUT_FOLDER'])
+        
+        # バッチプラン生成
+        max_images_per_batch = DEBUG_CONFIG.get("batch_max_images", 6)
+        print(f"📦 バッチプラン生成中... (最大{max_images_per_batch}枚/バッチ)")
+        batch_plan_path = generate_batch_plan(keyframes, video_subfolder, max_images_per_batch, overlap_frames=1)
+        
+        # アノテーション処理（有効な場合）
+        annotation_progress = {
+            "status": "not_started",
+            "current_batch": 0,
+            "total_batches": 0,
+            "completed_frames": 0,
+            "total_frames": len(keyframes)
+        }
+        
+        if DEBUG_CONFIG.get("annotation_enabled", False) and batch_plan_path:
+            print("🤖 アノテーション処理開始...")
+            annotation_progress["status"] = "in_progress"
+            
+            # バッチプランを読み込み
+            with open(batch_plan_path, 'r', encoding='utf-8') as f:
+                batch_plan = json.load(f)
+            
+            annotation_progress["total_batches"] = len(batch_plan['batches'])
+            
+            # 各バッチを処理
+            for batch in batch_plan['batches']:
+                batch_id = batch['batch_id']
+                image_paths = batch['image_paths']
+                annotation_progress["current_batch"] = batch_id
+                
+                print(f"📦 バッチ{batch_id}/{len(batch_plan['batches'])}処理中...")
+                
+                # アノテーション実行
+                batch_results = annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder)
+                
+                # バッチ結果を保存
+                batch_result_path = os.path.join(video_subfolder, f'batch_{batch_id}_results.json')
+                with open(batch_result_path, 'w', encoding='utf-8') as f:
+                    json.dump(batch_results, f, ensure_ascii=False, indent=2)
+                
+                annotation_progress["completed_frames"] += len([r for r in batch_results if r.get("status") == "success"])
+            
+            # アノテーション結果を統合
+            print("📝 アノテーション結果統合中...")
+            generate_image_annotations(batch_plan_path, video_subfolder, keyframes)
+            
+            annotation_progress["status"] = "completed"
+            print("✅ アノテーション処理完了")
+        else:
+            print("🚫 アノテーション: 無効化されています")
+        
+        # 進捗情報を保存（フロントエンド用）
+        progress_path = os.path.join(video_subfolder, 'annotation_progress.json')
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(annotation_progress, f, ensure_ascii=False, indent=2)
         
         # 議事録生成（Qwen3-VL使用、エラー時はフォールバック）
         print("🧠 議事録を生成中...")
@@ -1475,6 +2062,45 @@ def get_debug_info():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/annotation-progress/<video_id>', methods=['GET'])
+def get_annotation_progress(video_id):
+    """アノテーション処理の進捗を取得"""
+    try:
+        video_prefix = video_id.replace('.', '_')
+        video_subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+        progress_path = os.path.join(video_subfolder, 'annotation_progress.json')
+        
+        if not os.path.exists(progress_path):
+            return jsonify({
+                "status": "not_started",
+                "current_batch": 0,
+                "total_batches": 0,
+                "completed_frames": 0,
+                "total_frames": 0,
+                "percentage": 0
+            })
+        
+        with open(progress_path, 'r', encoding='utf-8') as f:
+            progress = json.load(f)
+        
+        # パーセンテージを計算
+        if progress.get("total_frames", 0) > 0:
+            percentage = int((progress.get("completed_frames", 0) / progress.get("total_frames", 1)) * 100)
+        else:
+            percentage = 0
+        
+        progress["percentage"] = percentage
+        
+        return jsonify(progress)
+    
+    except Exception as e:
+        print(f"❌ 進捗取得エラー: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
 
 
 @app.route('/api/list-outputs', methods=['GET'])

@@ -72,3 +72,30 @@ image_saving_enabled: true
   # true: outputs/フォルダに保存
   # false: スキップ
 
+# ================================================
+# 5. 画像アノテーション設定
+# ================================================
+annotation_enabled: true
+  # 説明: 画像アノテーション機能を有効にするかどうか
+  # true: LM Studio Qwen3-VL 8Bでアノテーションを実行
+  # false: スキップ
+
+lm_studio_endpoint: "http://localhost:1234/v1/chat/completions"
+  # 説明: LM Studio APIエンドポイントURL
+
+lm_studio_model: "unsloth/Qwen3-VL-8B-Instruct"
+  # 説明: LM Studioで使用するモデル名
+
+filtering_enabled: true
+  # 説明: フレームフィルタリングを有効にするかどうか
+  # true: 時間差 < filtering_min_time_gap_seconds のフレームを削除
+  # false: フィルタリングを無効化（すべてのフレームを保持）
+
+filtering_min_time_gap_seconds: 0.2
+  # 説明: フレームフィルタリングの最小時間差（秒）
+  # この値未満の時間差のフレームは削除される
+  # 注意: この設定により、TransNetV2で検出されたフレーム数が減る可能性があります
+
+batch_max_images: 6
+  # 説明: バッチあたりの最大画像数
+
