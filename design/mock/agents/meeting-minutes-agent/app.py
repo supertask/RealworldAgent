@@ -660,12 +660,196 @@ def remove_duplicate_keyframes(keyframes, similarity_threshold=0.95):
     return unique_keyframes
 
 
-def generate_minutes_with_qwen3vl(transcript_data, keyframes):
-    """Qwen3-VL (Modal) で画像つき議事録を生成
+def call_groq_chat_completion(messages, model="openai/gpt-oss-120b", max_tokens=4096, temperature=0.7):
+    """Groq Cloud APIでチャット補完を実行
+    
+    Args:
+        messages: OpenAI形式のメッセージリスト
+        model: モデル名（デフォルト: openai/gpt-oss-120b）
+        max_tokens: 最大トークン数
+        temperature: 温度パラメータ
+    
+    Returns:
+        APIレスポンスのcontent
+    """
+    GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+    
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEYが設定されていません")
+    
+    try:
+        response = requests.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {GROQ_API_KEY}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': model,
+                'messages': messages,
+                'max_tokens': max_tokens,
+                'temperature': temperature
+            },
+            timeout=120
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Groq API エラー: {response.status_code} - {response.text}")
+        
+        return response.json()['choices'][0]['message']['content']
+    except Exception as e:
+        print(f"❌ Groq API呼び出しエラー: {str(e)}")
+        raise
+
+
+def generate_transcript_with_groq(transcript_data, keyframes, image_annotations=None):
+    """Groq GPT-OSS-120Bで画像情報を含む拡張文字起こしを生成
     
     Args:
         transcript_data: 音声文字起こしデータ（segments含む）
-        keyframes: キーフレームリスト（画像base64含む）
+        keyframes: キーフレームリスト（timestamp, image_base64含む）
+        image_annotations: 画像アノテーション情報（visual_changes含む）
+    
+    Returns:
+        拡張文字起こしデータ
+    """
+    if not DEBUG_CONFIG.get("transcript_enhancement_enabled", True):
+        print("🚫 文字起こし拡張: 無効化されています")
+        return transcript_data
+    
+    try:
+        segments = transcript_data.get("segments", []) if transcript_data else []
+        
+        # キーフレームとタイムスタンプをマッチング
+        enhanced_segments = []
+        
+        for segment in segments:
+            start_time = segment.get('start', 0)
+            end_time = segment.get('end', 0)
+            text = segment.get('text', '')
+            
+            # このセグメントの時間範囲内のキーフレームを検索
+            related_keyframes = [
+                kf for kf in keyframes
+                if start_time <= kf.get('timestamp', 0) <= end_time + 3.0  # ±3秒の余裕
+            ]
+            
+            # 画像アノテーション情報を取得（visual_changes含む）
+            related_annotations = []
+            if image_annotations:
+                for kf in related_keyframes:
+                    kf_id = kf.get('id')
+                    kf_frame_index = kf.get('frame_index')
+                    if kf_id or kf_frame_index is not None:
+                        # image_annotationsから該当するアノテーションを検索
+                        annotation = None
+                        for ann in image_annotations.get('annotations', []):
+                            if (ann.get('id') == kf_id) or (ann.get('frame_number') == kf_frame_index):
+                                annotation = ann
+                                break
+                        if annotation:
+                            related_annotations.append(annotation)
+            
+            # 画像情報をテキスト形式で準備（visual_changes含む）
+            image_contexts = []
+            for kf in related_keyframes[:3]:  # 最大3枚まで
+                timestamp = kf.get('timestamp', 0)
+                
+                # アノテーション情報があれば追加（visual_changes含む）
+                annotation_text = ""
+                ann = next(
+                    (a for a in related_annotations 
+                     if a.get('frame_number') == kf.get('frame_index') or 
+                        a.get('id') == kf.get('id')),
+                    None
+                )
+                
+                if ann and ann.get('annotation'):
+                    ann_data = ann['annotation']
+                    visual_changes = ann_data.get('visual_changes', [])
+                    
+                    annotation_text = f"""
+画像の内容 ({timestamp:.1f}秒時点):
+- シーン: {ann_data.get('scene', 'N/A')}
+- 検出オブジェクト: {', '.join(ann_data.get('objects', []))}
+- 検出テキスト: {', '.join([t.get('content', '') for t in ann_data.get('text', [])])}
+"""
+                    # visual_changesがあれば追加
+                    if visual_changes:
+                        annotation_text += f"- 前のフレームからの変化: {', '.join(visual_changes)}\n"
+                
+                image_contexts.append(annotation_text if annotation_text else f"画像 ({timestamp:.1f}秒時点): アノテーション情報なし\n")
+            
+            # Groq APIで拡張文字起こしを生成
+            prompt = f"""以下の音声文字起こしセグメントと、対応する画像情報を統合して、より詳細な文字起こしを作成してください。
+
+音声文字起こし:
+[{start_time:.1f}秒 - {end_time:.1f}秒] {text}
+
+関連画像情報:
+{''.join(image_contexts) if image_contexts else '画像情報なし'}
+
+出力形式:
+- 元の音声内容を保持
+- 画像から読み取れる情報（資料の内容、グラフの数値、画面に表示されているテキストなど）を追加
+- フレーム間の変化情報も考慮して、視覚的な変化を説明に含める
+- 自然な文章として統合
+
+拡張された文字起こし:"""
+            
+            try:
+                groq_model = DEBUG_CONFIG.get("groq_model", "openai/gpt-oss-120b")
+                enhanced_text = call_groq_chat_completion([
+                    {
+                        'role': 'system',
+                        'content': 'あなたは会議の文字起こしを画像情報と統合して拡張する専門家です。画像の内容やフレーム間の変化も考慮してください。'
+                    },
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ], model=groq_model, max_tokens=512)
+                
+                enhanced_segments.append({
+                    **segment,
+                    'enhanced_text': enhanced_text,
+                    'original_text': text,
+                    'related_images_count': len(related_keyframes),
+                    'has_visual_changes': any(
+                        ann.get('annotation', {}).get('visual_changes', [])
+                        for ann in related_annotations
+                    )
+                })
+            except Exception as e:
+                print(f"⚠️ セグメント拡張エラー ({start_time:.1f}秒): {str(e)}")
+                # エラー時は元のテキストを使用
+                enhanced_segments.append({
+                    **segment,
+                    'enhanced_text': text,
+                    'original_text': text,
+                    'related_images_count': len(related_keyframes),
+                    'has_visual_changes': False
+                })
+        
+        return {
+            **transcript_data,
+            'segments': enhanced_segments,
+            'enhanced': True
+        }
+        
+    except Exception as e:
+        print(f"❌ 文字起こし拡張エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return transcript_data
+
+
+def generate_minutes_with_groq(enhanced_transcript_data, keyframes=None):
+    """Groq GPT-OSS-120Bで議事録を生成
+    
+    Args:
+        enhanced_transcript_data: 拡張された文字起こしデータ
+        keyframes: キーフレームリスト（オプション）
     
     Returns:
         議事録データ
@@ -676,186 +860,142 @@ def generate_minutes_with_qwen3vl(transcript_data, keyframes):
             "title": "会議議事録（ダミー）",
             "date": datetime.datetime.now().strftime("%Y年%m月%d日"),
             "time": datetime.datetime.now().strftime("%H:%M"),
-            "summary": "議事録生成が無効化されています。テスト用のダミーデータです。",
+            "summary": "議事録生成が無効化されています。",
             "sections": [],
             "keyframes_used": []
         }
-
-    import requests
     
     try:
-        MODAL_ENDPOINT = os.getenv('MODAL_QWEN3VL_ENDPOINT')
+        segments = enhanced_transcript_data.get("segments", [])
         
-        if not MODAL_ENDPOINT:
-            print("⚠️ MODAL_QWEN3VL_ENDPOINT が設定されていません - フォールバック処理")
-            return generate_minutes_fallback(transcript_data, keyframes)
+        # 拡張テキストまたは元のテキストを使用
+        transcript_text = "\n".join([
+            f"[{s.get('start', 0):.1f}秒-{s.get('end', 0):.1f}秒] {s.get('enhanced_text', s.get('text', ''))}"
+            for s in segments
+        ])
         
-        segments = transcript_data.get("segments", []) if transcript_data else []
-        
-        # 重複画像を削除
-        unique_keyframes = remove_duplicate_keyframes(keyframes)
-        
-        # 分割処理: セグメントとキーフレームを時間軸でマッチング
-        chunks = []
-        chunk_duration = 60  # 1チャンク = 60秒
-        
-        max_time = max(
-            [s.get('end', 0) for s in segments] + [kf.get('timestamp', 0) for kf in unique_keyframes],
-            default=0
-        )
-        
-        num_chunks = int(max_time / chunk_duration) + 1
-        
-        print(f"📦 チャンク分割: {num_chunks}個 (各{chunk_duration}秒)")
-        
-        for i in range(num_chunks):
-            start_time = i * chunk_duration
-            end_time = (i + 1) * chunk_duration
-            
-            # この時間帯のセグメントを抽出
-            chunk_segments = [
-                s for s in segments 
-                if s.get('start', 0) >= start_time and s.get('start', 0) < end_time
-            ]
-            
-            # この時間帯のキーフレームを抽出
-            chunk_keyframes = [
-                kf for kf in unique_keyframes
-                if kf.get('timestamp', 0) >= start_time and kf.get('timestamp', 0) < end_time
-            ]
-            
-            if chunk_segments or chunk_keyframes:
-                chunks.append({
-                    'start_time': start_time,
-                    'end_time': end_time,
-                    'segments': chunk_segments,
-                    'keyframes': chunk_keyframes
-                })
-        
-        print(f"📤 Modal Qwen3-VL に送信: {len(chunks)}チャンク")
-        
-        # 各チャンクをQwen3-VLで処理
-        all_sections = []
-        
-        for idx, chunk in enumerate(chunks):
-            print(f"🧠 チャンク {idx+1}/{len(chunks)} 処理中...")
-            
-            # テキスト部分を結合（タイムスタンプ付き）
-            chunk_text_with_time = []
-            for s in chunk['segments']:
-                start_time = s.get('start', 0)
-                end_time = s.get('end', 0)
-                text = s.get('text', '')
-                chunk_text_with_time.append(f"[{start_time:.1f}秒-{end_time:.1f}秒] {text}")
-            chunk_text = "\n".join(chunk_text_with_time)
-            
-            # 画像データとタイムスタンプ情報を準備
-            images_b64 = [kf.get('image_base64', '') for kf in chunk['keyframes']]
-            images_timestamps = [f"画像{i}: {kf.get('timestamp', 0):.1f}秒時点" for i, kf in enumerate(chunk['keyframes'])]
-            
-            # Modal Qwen3-VL API呼び出し
-            try:
-                response = requests.post(
-                    MODAL_ENDPOINT,
-                    json={
-                        'text': chunk_text,
-                        'images': images_b64[:10],  # 最大10枚まで（制限）
-                        'prompt': f"""以下の会議の一部（{chunk['start_time']:.0f}秒〜{chunk['end_time']:.0f}秒）について、
-音声文字起こしと画像を元に議事録セクションを作成してください。
+        # 全体サマリー生成
+        summary_prompt = f"""以下の会議の文字起こしから、300文字程度で要約を作成してください。
 
-音声文字起こし（タイムスタンプ付き）:
+{transcript_text[:3000]}
+
+重要なポイント:
+- 議題と決定事項
+- 主要な議論の内容
+- アクションアイテム（あれば）
+
+要約:"""
+        
+        groq_model = DEBUG_CONFIG.get("groq_model", "openai/gpt-oss-120b")
+        summary = call_groq_chat_completion([
+            {
+                'role': 'system',
+                'content': 'あなたは会議の議事録を作成する専門家です。'
+            },
+            {
+                'role': 'user',
+                'content': summary_prompt
+            }
+        ], model=groq_model, max_tokens=512, temperature=0.7)
+        
+        # セクション分割と詳細生成
+        sections = []
+        chunk_size = 5  # 5セグメントごとに1セクション
+        
+        for i in range(0, len(segments), chunk_size):
+            chunk_segments = segments[i:i+chunk_size]
+            
+            if not chunk_segments:
+                continue
+            
+            start_time = chunk_segments[0].get('start', 0)
+            end_time = chunk_segments[-1].get('end', 0)
+            
+            chunk_text = "\n".join([
+                f"[{s.get('start', 0):.1f}秒-{s.get('end', 0):.1f}秒] {s.get('enhanced_text', s.get('text', ''))}"
+                for s in chunk_segments
+            ])
+            
+            section_prompt = f"""以下の会議の一部（{start_time:.0f}秒〜{end_time:.0f}秒）について、議事録セクションを作成してください。
+
 {chunk_text}
 
-画像情報:
-{chr(10).join(images_timestamps)}
-
-**重要**: 各画像のタイムスタンプと音声のタイムスタンプを照らし合わせて、
-音声内容と**実際に関連がある画像のみ**をrelated_imagesに含めてください。
-
-関連性の判断基準：
-1. **時間的一致**: 画像のタイムスタンプが音声セグメントの時間範囲内またはその直後（±3秒程度）
-2. **内容的一致**: 音声で言及されている内容が画像に映っている
-3. **文脈的価値**: 画像が議論の文脈を理解するのに役立つ
-
-除外すべき画像：
-- 単なる話者の顔や会議室の風景
-- 音声内容と時間的にも内容的にも関連がない
-- ぼやけていたり、情報価値が低い
-
-判断例：
-- [12.3秒-18.5秒] 「このグラフを見てください」+ 画像1: 15.2秒時点 → グラフが映っていれば✅選択
-- [25.0秒-30.2秒] 「次のステップは...」+ 画像2: 26.5秒時点 → 話者の顔だけなら❌除外
-- [40.1秒-45.3秒] 「資料の3ページ目です」+ 画像3: 42.0秒時点 → 資料が映っていれば✅選択
-
-以下の形式でJSON形式で返してください:
+以下のJSON形式で返してください:
 {{
   "section_title": "セクションタイトル",
   "content": "内容の要約",
-  "key_points": ["ポイント1", "ポイント2"],
-  "related_images": [0, 2]  // 音声内容と時間的・内容的に関連がある画像のインデックスのみ（関連画像がない場合は空配列[]）
+  "key_points": ["ポイント1", "ポイント2", "ポイント3"]
 }}"""
+            
+            try:
+                section_json = call_groq_chat_completion([
+                    {
+                        'role': 'system',
+                        'content': 'あなたは会議の議事録セクションを作成する専門家です。JSON形式で返してください。'
                     },
-                    timeout=120
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    section = {
-                        "time": f"{chunk['start_time']:.0f}秒 - {chunk['end_time']:.0f}秒",
-                        "title": result.get('section_title', f"セクション {idx+1}"),
-                        "content": result.get('content', chunk_text[:200]),
-                        "key_points": result.get('key_points', []),
-                        "keyframes": [chunk['keyframes'][i] for i in result.get('related_images', []) if i < len(chunk['keyframes'])]
+                    {
+                        'role': 'user',
+                        'content': section_prompt
                     }
-                    all_sections.append(section)
-                    print(f"✅ チャンク {idx+1} 処理完了")
+                ], model=groq_model, max_tokens=512, temperature=0.7)
+                
+                # JSON抽出
+                if "{" in section_json and "}" in section_json:
+                    json_start = section_json.find("{")
+                    json_end = section_json.rfind("}") + 1
+                    json_str = section_json[json_start:json_end]
+                    section_data = json.loads(json_str)
+                    
+                    sections.append({
+                        "time": f"{start_time:.0f}秒 - {end_time:.0f}秒",
+                        "title": section_data.get('section_title', f"セクション {len(sections)+1}"),
+                        "content": section_data.get('content', chunk_text[:200]),
+                        "key_points": section_data.get('key_points', [])
+                    })
                 else:
-                    print(f"⚠️ Modal API エラー (チャンク {idx+1}): {response.status_code}")
-                    # エラー時はフォールバック
-                    all_sections.append({
-                        "time": f"{chunk['start_time']:.0f}秒 - {chunk['end_time']:.0f}秒",
-                        "content": chunk_text[:200] if chunk_text else "内容なし",
-                        "keyframes": chunk['keyframes'][:3]
+                    # JSON形式でない場合はフォールバック
+                    sections.append({
+                        "time": f"{start_time:.0f}秒 - {end_time:.0f}秒",
+                        "title": f"セクション {len(sections)+1}",
+                        "content": chunk_text[:200],
+                        "key_points": []
                     })
             except Exception as e:
-                print(f"⚠️ Modal API 呼び出しエラー (チャンク {idx+1}): {str(e)}")
-                all_sections.append({
-                    "time": f"{chunk['start_time']:.0f}秒 - {chunk['end_time']:.0f}秒",
-                    "content": chunk_text[:200] if chunk_text else "内容なし",
-                    "keyframes": chunk['keyframes'][:3]
+                print(f"⚠️ セクション生成エラー ({start_time:.0f}秒): {str(e)}")
+                sections.append({
+                    "time": f"{start_time:.0f}秒 - {end_time:.0f}秒",
+                    "title": f"セクション {len(sections)+1}",
+                    "content": chunk_text[:200],
+                    "key_points": []
                 })
         
-        # 全体のサマリーを生成
-        all_text = "\n".join([s.get('text', '') for s in segments])
+        # アクションアイテム抽出
+        action_items_prompt = f"""以下の会議内容から、アクションアイテムを3〜5個抽出してください。
+
+{transcript_text[:2000]}
+
+各アイテムを1行で簡潔にリストしてください:"""
         
-        print("📝 全体サマリー生成中...")
         try:
-            summary_response = requests.post(
-                MODAL_ENDPOINT,
-                json={
-                    'text': all_text,
-                    'images': [kf.get('image_base64', '') for kf in unique_keyframes[:5]],  # 代表的な5枚
-                    'prompt': f"""以下の会議全体の内容を300文字程度で要約してください:
-
-{all_text[:2000]}
-
-提供された{min(5, len(unique_keyframes))}枚の画像は、会議中の重要なシーンです。
-画像に資料やグラフ、重要な情報が映っていればそれも考慮してください。
-ただし、単なる話者の顔だけの画像は無視して構いません。
-
-音声内容を中心に、会議の全体像を簡潔にまとめてください。"""
+            action_items_text = call_groq_chat_completion([
+                {
+                    'role': 'system',
+                    'content': 'あなたは会議のアクションアイテムを抽出する専門家です。'
                 },
-                timeout=60
-            )
+                {
+                    'role': 'user',
+                    'content': action_items_prompt
+                }
+            ], model=groq_model, max_tokens=256, temperature=0.5)
             
-            if summary_response.status_code == 200:
-                summary_result = summary_response.json()
-                summary = summary_result.get('content', all_text[:300])
-            else:
-                summary = all_text[:300] + "..." if len(all_text) > 300 else all_text
+            action_items = [
+                {"description": line.strip('- ').strip()}
+                for line in action_items_text.split('\n')
+                if line.strip() and not line.strip().startswith('#')
+            ]
         except Exception as e:
-            print(f"⚠️ サマリー生成エラー: {str(e)}")
-            summary = all_text[:300] + "..." if len(all_text) > 300 else all_text
+            print(f"⚠️ アクションアイテム抽出エラー: {str(e)}")
+            action_items = []
         
         now = datetime.datetime.now()
         minutes = {
@@ -863,17 +1003,19 @@ def generate_minutes_with_qwen3vl(transcript_data, keyframes):
             "date": now.strftime("%Y年%m月%d日"),
             "time": now.strftime("%H:%M"),
             "summary": summary,
-            "sections": all_sections,
-            "keyframes_used": [kf.get('image', '') for kf in unique_keyframes]
+            "sections": sections,
+            "action_items": action_items if action_items else [{"description": "議事録の内容を確認"}],
+            "keyframes_used": [kf.get('image', '') for kf in (keyframes or [])],
+            "model": "openai/gpt-oss-120b"
         }
         
         return minutes
         
     except Exception as e:
-        print(f"❌ Qwen3-VL 処理エラー: {str(e)}")
+        print(f"❌ Groq議事録生成エラー: {str(e)}")
         import traceback
         traceback.print_exc()
-        return generate_minutes_fallback(transcript_data, keyframes)
+        return generate_minutes_fallback(enhanced_transcript_data, keyframes or [])
 
 
 def generate_minutes_fallback(transcript_data, keyframes):
@@ -1631,6 +1773,104 @@ def transcript_to_markdown(transcript_data, keyframes, video_id):
     return markdown
 
 
+def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_id, image_annotations=None):
+    """拡張文字起こしをMarkdown形式に変換（画像情報・visual_changes含む）
+    
+    Args:
+        enhanced_transcript_data: 拡張された文字起こしデータ
+        keyframes: キーフレームリスト
+        video_id: ビデオID
+        image_annotations: 画像アノテーション情報（オプション）
+    
+    Returns:
+        Markdown形式の拡張文字起こし
+    """
+    now = datetime.datetime.now()
+    markdown = f"""# 画像付き文字起こし - {video_id}
+
+**生成日時**: {now.strftime('%Y年%m月%d日 %H:%M')}
+
+---
+
+"""
+    
+    segments = enhanced_transcript_data.get("segments", [])
+    
+    # アノテーションIDマッピングを作成
+    annotation_map = {}
+    if image_annotations:
+        for ann in image_annotations.get('annotations', []):
+            frame_number = ann.get('frame_number')
+            if frame_number is not None:
+                annotation_map[frame_number] = ann
+    
+    # セグメントごとに処理
+    for segment in segments:
+        start_time = segment.get('start', 0)
+        end_time = segment.get('end', 0)
+        enhanced_text = segment.get('enhanced_text', segment.get('text', ''))
+        original_text = segment.get('original_text', '')
+        has_visual_changes = segment.get('has_visual_changes', False)
+        
+        # タイムスタンプ付きテキスト
+        markdown += f"## [{start_time:.1f}秒 - {end_time:.1f}秒]\n\n"
+        
+        # 拡張テキストを表示
+        markdown += f"{enhanced_text}\n\n"
+        
+        # 元のテキストと異なる場合は注記
+        if enhanced_text != original_text:
+            markdown += f"<details>\n<summary>元の音声文字起こし</summary>\n\n{original_text}\n\n</details>\n\n"
+        
+        # このセグメントに対応する画像を検索
+        related_keyframes = [
+            kf for kf in keyframes
+            if abs(kf.get('timestamp', 0) - start_time) <= 3.0
+        ]
+        
+        # 画像を埋め込み（アノテーション情報付き）
+        for kf in related_keyframes[:3]:  # 最大3枚まで
+            image_name = kf.get('image', '')
+            timestamp = kf.get('timestamp', 0)
+            frame_index = kf.get('frame_index')
+            
+            if image_name:
+                markdown += f"### 画像 ({timestamp:.1f}秒時点)\n\n"
+                markdown += f"![{image_name}]({image_name})\n\n"
+                
+                # アノテーション情報があれば追加
+                if frame_index is not None and frame_index in annotation_map:
+                    ann = annotation_map[frame_index]
+                    ann_data = ann.get('annotation', {})
+                    
+                    if ann_data.get('scene'):
+                        markdown += f"**シーン**: {ann_data['scene']}\n\n"
+                    
+                    if ann_data.get('objects'):
+                        markdown += f"**検出オブジェクト**: {', '.join(ann_data['objects'])}\n\n"
+                    
+                    if ann_data.get('text'):
+                        text_items = [t.get('content', '') for t in ann_data['text'] if t.get('content')]
+                        if text_items:
+                            markdown += f"**検出テキスト**: {', '.join(text_items)}\n\n"
+                    
+                    # visual_changesがあれば表示
+                    visual_changes = ann_data.get('visual_changes', [])
+                    if visual_changes:
+                        markdown += f"**前のフレームからの変化**:\n"
+                        for change in visual_changes:
+                            markdown += f"- {change}\n"
+                        markdown += "\n"
+                
+                markdown += "---\n\n"
+        
+        markdown += "\n"
+    
+    markdown += f"\n*画像付き文字起こしは自動生成されました。生成日時: {now.strftime('%Y-%m-%d %H:%M:%S')}*\n"
+    
+    return markdown
+
+
 def minutes_to_markdown(minutes):
     """議事録をMarkdown形式に変換"""
     markdown = f"""# {minutes.get('title', '会議議事録')}
@@ -1886,15 +2126,40 @@ def generate_minutes_endpoint(video_id):
         with open(progress_path, 'w', encoding='utf-8') as f:
             json.dump(annotation_progress, f, ensure_ascii=False, indent=2)
         
-        # 議事録生成（Qwen3-VL使用、エラー時はフォールバック）
-        print("🧠 議事録を生成中...")
-        minutes = generate_minutes_with_qwen3vl(transcript, keyframes)
+        # 画像アノテーション情報を読み込み（オプション）
+        image_annotations = None
+        if DEBUG_CONFIG.get("annotation_enabled", False) and video_subfolder:
+            annotation_path = os.path.join(video_subfolder, 'image_annotations.json')
+            if os.path.exists(annotation_path):
+                with open(annotation_path, 'r', encoding='utf-8') as f:
+                    image_annotations = json.load(f)
+                print(f"✅ 画像アノテーション情報を読み込み: {len(image_annotations.get('annotations', []))}件")
+        
+        # 画像付き文字起こし生成（Groq GPT-OSS-120B）
+        print("📝 画像付き文字起こし生成中（Groq GPT-OSS-120B）...")
+        enhanced_transcript = generate_transcript_with_groq(transcript, keyframes, image_annotations)
+        print(f"✅ 画像付き文字起こし生成完了")
+        
+        # 議事録生成（Groq GPT-OSS-120B）
+        print("🧠 議事録を生成中（Groq GPT-OSS-120B）...")
+        minutes = generate_minutes_with_groq(enhanced_transcript, keyframes)
         print(f"✅ 議事録生成完了")
         
         # 保存先フォルダ（サブフォルダがない場合はoutputs直下）
         save_folder = video_subfolder if video_subfolder else app.config['OUTPUT_FOLDER']
         
-        # 1. 議事録Markdownを生成
+        # 1. 拡張文字起こしMarkdownを生成・保存
+        enhanced_transcript_markdown = enhanced_transcript_to_markdown(
+            enhanced_transcript, keyframes, video_id, image_annotations
+        )
+        enhanced_transcript_filename = "enhanced_transcript.md"
+        enhanced_transcript_path = os.path.join(save_folder, enhanced_transcript_filename)
+        
+        with open(enhanced_transcript_path, 'w', encoding='utf-8') as f:
+            f.write(enhanced_transcript_markdown)
+        print(f"✅ 拡張文字起こしを保存: {enhanced_transcript_filename}")
+        
+        # 2. 議事録Markdownを生成
         minutes_markdown = minutes_to_markdown(minutes)
         minutes_filename = "minutes.md"
         minutes_path = os.path.join(save_folder, minutes_filename)
@@ -1903,7 +2168,7 @@ def generate_minutes_endpoint(video_id):
             f.write(minutes_markdown)
         print(f"✅ 議事録を保存: {minutes_filename}")
         
-        # 2. 文字起こしMarkdownを生成
+        # 3. 文字起こしMarkdownを生成（元の文字起こし）
         transcript_markdown = transcript_to_markdown(transcript, keyframes, video_id)
         transcript_filename = "transcript.md"
         transcript_path = os.path.join(save_folder, transcript_filename)
@@ -1919,6 +2184,7 @@ def generate_minutes_endpoint(video_id):
             'status': 'success',
             'minutes': minutes,
             'minutes_markdown': minutes_markdown,
+            'enhanced_transcript_markdown': enhanced_transcript_markdown,
             'transcript_markdown': transcript_markdown,
             'download_url': f'/api/download-output/{zip_filename}'
         })
@@ -1927,6 +2193,22 @@ def generate_minutes_endpoint(video_id):
         print(f"❌ generate_minutes_endpoint エラー: {str(e)}")
         import traceback
         traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/get-image/<video_id>/<filename>')
+def get_image(video_id, filename):
+    """キーフレーム画像を取得"""
+    try:
+        video_prefix = video_id.replace('.', '_')
+        video_subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+        image_path = os.path.join(video_subfolder, filename)
+        
+        if os.path.exists(image_path):
+            return send_file(image_path, mimetype='image/jpeg')
+        else:
+            return jsonify({'error': '画像が見つかりません'}), 404
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
@@ -2007,15 +2289,102 @@ def download_output(zip_filename):
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/download-minutes/<filename>', methods=['GET'])
-def download_minutes(filename):
-    """議事録をダウンロード（個別ファイル用・後方互換性のため残す）"""
+@app.route('/api/download-minutes/<path:filepath>', methods=['GET'])
+def download_minutes(filepath):
+    """議事録をダウンロード（個別ファイル用・後方互換性のため残す）
+    
+    パス形式:
+    - /api/download-minutes/<video_id>/<file_type> (例: 20251111_045126_shohei_otani_short_mp4/minutes)
+    - /api/download-minutes/<filename> (レガシー形式)
+    """
     try:
-        file_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+        # パスを分割
+        parts = filepath.split('/')
+        
+        if len(parts) == 2:
+            # 新しい形式: video_id/file_type
+            video_id_part = parts[0]
+            file_type = parts[1]
+            
+            # video_idをサブフォルダ名として使用（そのまま）
+            video_prefix = video_id_part
+            subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+            
+            # ファイル名を決定
+            if file_type == 'minutes':
+                filename = 'minutes.md'
+            elif file_type == 'enhanced_transcript':
+                filename = 'enhanced_transcript.md'
+            elif file_type == 'transcript':
+                filename = 'transcript.md'
+            else:
+                filename = f'{file_type}.md'
+            
+            file_path = os.path.join(subfolder, filename)
+        else:
+            # レガシー形式: 直下のファイル
+            file_path = os.path.join(app.config['OUTPUT_FOLDER'], filepath)
+        
         if not os.path.exists(file_path):
             return jsonify({'error': 'ファイルが見つかりません'}), 404
         
         return send_file(file_path, as_attachment=True, mimetype='text/markdown')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/view-file/<path:filepath>', methods=['GET'])
+def view_file(filepath):
+    """過去のファイルを表示用に取得（MarkdownをJSONで返す）
+    
+    パス形式:
+    - /api/view-file/<video_id>/<file_type> (例: 20251111_045126_shohei_otani_short_mp4/minutes)
+    - /api/view-file/<filename> (レガシー形式)
+    """
+    try:
+        # パスを分割
+        parts = filepath.split('/')
+        
+        if len(parts) == 2:
+            # 新しい形式: video_id/file_type
+            video_id_part = parts[0]
+            file_type = parts[1]
+            
+            # video_idをサブフォルダ名として使用（そのまま）
+            video_prefix = video_id_part
+            subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+            
+            # ファイル名を決定
+            if file_type == 'minutes':
+                filename = 'minutes.md'
+            elif file_type == 'enhanced_transcript':
+                filename = 'enhanced_transcript.md'
+            elif file_type == 'transcript':
+                filename = 'transcript.md'
+            else:
+                filename = f'{file_type}.md'
+            
+            file_path = os.path.join(subfolder, filename)
+        else:
+            # レガシー形式: 直下のファイル
+            file_path = os.path.join(app.config['OUTPUT_FOLDER'], filepath)
+        
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'ファイルが見つかりません'}), 404
+        
+        # Markdownファイルを読み込み
+        with open(file_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # video_idを取得（サブフォルダ名から）
+        video_id = parts[0] if len(parts) == 2 else None
+        
+        return jsonify({
+            'markdown': markdown_content,
+            'video_id': video_id,
+            'file_type': file_type if len(parts) == 2 else 'legacy',
+            'filename': os.path.basename(file_path)
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -2105,7 +2474,7 @@ def get_annotation_progress(video_id):
 
 @app.route('/api/list-outputs', methods=['GET'])
 def list_outputs():
-    """生成済み議事録の一覧"""
+    """生成済み議事録の一覧（動画ごとにグループ化）"""
     try:
         outputs = []
         # OUTPUT_FOLDER が存在することを確認
@@ -2113,27 +2482,97 @@ def list_outputs():
         
         if os.path.exists(app.config['OUTPUT_FOLDER']):
             try:
-                for filename in os.listdir(app.config['OUTPUT_FOLDER']):
-                    if filename.endswith('.md'):
-                        file_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+                # サブフォルダを検索
+                for item in os.listdir(app.config['OUTPUT_FOLDER']):
+                    item_path = os.path.join(app.config['OUTPUT_FOLDER'], item)
+                    
+                    # サブフォルダの場合
+                    if os.path.isdir(item_path):
+                        # サブフォルダ内のMarkdownファイルを検索
+                        available_files = {}
+                        latest_mod_time = 0
+                        total_size = 0
+                        
+                        for filename in os.listdir(item_path):
+                            if filename.endswith('.md'):
+                                file_path = os.path.join(item_path, filename)
+                                try:
+                                    file_size = os.path.getsize(file_path)
+                                    mod_time = os.path.getmtime(file_path)
+                                    total_size += file_size
+                                    latest_mod_time = max(latest_mod_time, mod_time)
+                                    
+                                    # ファイルタイプを決定
+                                    if filename == 'minutes.md':
+                                        file_type = 'minutes'
+                                    elif filename == 'enhanced_transcript.md':
+                                        file_type = 'enhanced_transcript'
+                                    elif filename == 'transcript.md':
+                                        file_type = 'transcript'
+                                    else:
+                                        file_type = filename.replace('.md', '')
+                                    
+                                    available_files[file_type] = {
+                                        'filename': filename,
+                                        'size': file_size,
+                                        'url': f'/api/download-minutes/{item}/{file_type}'
+                                    }
+                                except (OSError, IOError) as fe:
+                                    print(f"ファイル読み込みエラー {item_path}/{filename}: {str(fe)}")
+                                    continue
+                        
+                        # 少なくとも1つのMarkdownファイルがある場合のみ追加
+                        if available_files:
+                            # video_idを抽出（サブフォルダ名をそのまま使用）
+                            video_id = item
+                            
+                            # デフォルトURL（議事録があれば議事録、なければ最初のファイル）
+                            default_url = available_files.get('minutes', {}).get('url') or list(available_files.values())[0]['url']
+                            
+                            outputs.append({
+                                'video_id': video_id,
+                                'display_name': video_id,
+                                'size': total_size,
+                                'modified': datetime.datetime.fromtimestamp(latest_mod_time).isoformat(),
+                                'default_url': default_url,
+                                'available_files': available_files
+                            })
+                    
+                    # 直下のMarkdownファイル（レガシー形式）
+                    elif item.endswith('.md'):
+                        file_path = os.path.join(app.config['OUTPUT_FOLDER'], item)
                         try:
                             file_size = os.path.getsize(file_path)
                             mod_time = os.path.getmtime(file_path)
                             outputs.append({
-                                'filename': filename,
+                                'video_id': None,
+                                'display_name': item,
                                 'size': file_size,
                                 'modified': datetime.datetime.fromtimestamp(mod_time).isoformat(),
-                                'url': f'/api/download-minutes/{filename}'
+                                'default_url': f'/api/download-minutes/{item}',
+                                'available_files': {
+                                    'legacy': {
+                                        'filename': item,
+                                        'size': file_size,
+                                        'url': f'/api/download-minutes/{item}'
+                                    }
+                                }
                             })
                         except (OSError, IOError) as fe:
-                            print(f"ファイル読み込みエラー {filename}: {str(fe)}")
+                            print(f"ファイル読み込みエラー {item}: {str(fe)}")
                             continue
+                            
             except (OSError, IOError) as de:
                 print(f"ディレクトリ読み込みエラー: {str(de)}")
+        
+        # 更新日時でソート（新しい順）
+        outputs.sort(key=lambda x: x['modified'], reverse=True)
         
         return jsonify({'outputs': outputs})
     except Exception as e:
         print(f"list_outputs エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e), 'outputs': []}), 200  # エラー時も出力を返す
 
 

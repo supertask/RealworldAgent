@@ -62,7 +62,11 @@ function setupEventListeners() {
     // タブ切り替え
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            switchTab(e.target.dataset.tab);
+            const tabName = e.target.dataset.tab;
+            // アクティブなタブボタンを更新
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            switchTab(tabName);
         });
     });
 
@@ -71,6 +75,36 @@ function setupEventListeners() {
     const newVideoBtn = document.getElementById('new-video-btn');
     if (downloadBtn) downloadBtn.addEventListener('click', downloadMarkdown);
     if (newVideoBtn) newVideoBtn.addEventListener('click', resetForm);
+    
+    // モーダルのイベントリスナー
+    const modal = document.getElementById('file-view-modal');
+    const modalClose = document.getElementById('modal-close');
+    const modalCloseBtn = document.getElementById('modal-close-btn');
+    const modalTabBtns = document.querySelectorAll('.modal-tab-btn');
+    
+    if (modalClose) {
+        modalClose.addEventListener('click', closeFileModal);
+    }
+    
+    if (modalCloseBtn) {
+        modalCloseBtn.addEventListener('click', closeFileModal);
+    }
+    
+    // モーダル外をクリックで閉じる
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeFileModal();
+            }
+        });
+    }
+    
+    // モーダルタブ切り替え
+    modalTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            switchModalTab(btn.dataset.tab);
+        });
+    });
 }
 
 function handleFileSelect(e) {
@@ -280,11 +314,12 @@ async function generateMinutes() {
         const data = await response.json();
         appState.currentMinutes = data.minutes;
         appState.minutesMarkdown = data.minutes_markdown;
+        appState.enhancedTranscriptMarkdown = data.enhanced_transcript_markdown;
         appState.transcriptMarkdown = data.transcript_markdown;
         appState.downloadUrl = data.download_url;
 
         // UI更新
-        displayMinutes(data.minutes, data.minutes_markdown, data.transcript_markdown);
+        displayMinutes(data.minutes, data.minutes_markdown, data.enhanced_transcript_markdown, data.transcript_markdown);
         processingSection.style.display = 'none';
         resultSection.style.display = 'block';
         updateProgressStep(3);
@@ -298,58 +333,73 @@ async function generateMinutes() {
     }
 }
 
-function displayMinutes(minutes, minutesMarkdown, transcriptMarkdown) {
-    // プレビュータブ
-    const preview = document.getElementById('minutes-preview');
-    preview.innerHTML = renderMinutesPreview(minutes);
-
-    // 議事録Markdownタブ
-    document.getElementById('markdown-content').value = minutesMarkdown;
-    
-    // 文字起こしMarkdownタブ（新規追加）
-    const transcriptTab = document.getElementById('transcript-content');
-    if (transcriptTab) {
-        transcriptTab.value = transcriptMarkdown;
+function displayMinutes(minutes, minutesMarkdown, enhancedTranscriptMarkdown, transcriptMarkdown) {
+    // 画像付き文字起こしのマークダウン
+    const enhancedTranscriptMd = document.getElementById('enhanced-transcript-md-content');
+    if (enhancedTranscriptMd && enhancedTranscriptMarkdown) {
+        enhancedTranscriptMd.value = enhancedTranscriptMarkdown;
     }
-
-    // JSONタブ
-    document.getElementById('json-content').value = JSON.stringify(minutes, null, 2);
+    
+    // 画像付き文字起こしのプレビュー
+    if (enhancedTranscriptMarkdown) {
+        renderMarkdown(enhancedTranscriptMarkdown, 'enhanced-transcript-preview');
+    }
+    
+    // 議事録のマークダウン
+    const minutesMd = document.getElementById('minutes-md-content');
+    if (minutesMd && minutesMarkdown) {
+        minutesMd.value = minutesMarkdown;
+    }
+    
+    // 議事録のプレビュー
+    if (minutesMarkdown) {
+        renderMarkdown(minutesMarkdown, 'minutes-preview');
+    }
+    
+    // JSON
+    const jsonContent = document.getElementById('json-content');
+    if (jsonContent) {
+        jsonContent.value = JSON.stringify(minutes, null, 2);
+    }
 }
 
-function renderMinutesPreview(minutes) {
-    let html = `
-        <h3>📋 ${minutes.title}</h3>
-        <p><strong>日時:</strong> ${minutes.date} ${minutes.time}</p>
+function renderMarkdown(markdown, containerId, videoId = null) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    // videoIdが指定されていない場合は、appStateから取得を試みる
+    const finalVideoId = videoId || appState.videoId;
+    
+    // marked.jsでMarkdownをHTMLに変換
+    if (typeof marked !== 'undefined') {
+        const html = marked.parse(markdown);
+        // DOMPurifyでサニタイズ
+        if (typeof DOMPurify !== 'undefined') {
+            container.innerHTML = DOMPurify.sanitize(html);
+        } else {
+            container.innerHTML = html;
+        }
         
-        <h3>サマリー</h3>
-        <p>${minutes.summary.replace(/\n/g, '<br>')}</p>
-    `;
-
-    if (minutes.sections && minutes.sections.length > 0) {
-        html += '<h3>議事録内容</h3>';
-        minutes.sections.forEach((section, index) => {
-            html += `
-                <div style="margin: 1rem 0; padding: 1rem; background: #f3f4f6; border-radius: 8px;">
-                    <strong>[${section.time}]</strong>
-                    <p>${section.content}</p>
-                </div>
-            `;
+        // 画像パスを修正（相対パスをAPI経由に）
+        const images = container.querySelectorAll('img');
+        images.forEach(img => {
+            const src = img.getAttribute('src');
+            if (src && !src.startsWith('http') && !src.startsWith('/api/')) {
+                // 画像パスをAPI経由に変換
+                if (finalVideoId) {
+                    img.setAttribute('src', `/api/get-image/${finalVideoId}/${src}`);
+                }
+            }
         });
+    } else {
+        container.innerHTML = '<pre>' + escapeHtml(markdown) + '</pre>';
     }
+}
 
-    if (minutes.action_items && minutes.action_items.length > 0) {
-        html += '<h3>アクションアイテム</h3><ul>';
-        minutes.action_items.forEach(item => {
-            html += `<li>${item.description}</li>`;
-        });
-        html += '</ul>';
-    }
-
-    if (minutes.notes) {
-        html += `<h3>備考</h3><p>${minutes.notes}</p>`;
-    }
-
-    return html;
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 function switchTab(tabName) {
@@ -357,13 +407,18 @@ function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.remove('active');
     });
-    event.target.classList.add('active');
+    if (event && event.target) {
+        event.target.classList.add('active');
+    }
 
     // タブコンテンツの更新
     document.querySelectorAll('.tab-content').forEach(content => {
         content.classList.remove('active');
     });
-    document.getElementById(`tab-${tabName}`).classList.add('active');
+    const targetTab = document.getElementById(`tab-${tabName}`);
+    if (targetTab) {
+        targetTab.classList.add('active');
+    }
 }
 
 async function downloadMarkdown() {
@@ -395,6 +450,7 @@ function resetForm() {
         videoId: null,
         currentMinutes: null,
         minutesMarkdown: null,
+        enhancedTranscriptMarkdown: null,
         transcriptMarkdown: null,
         downloadUrl: null,
         isProcessing: false
@@ -432,7 +488,7 @@ async function loadOutputsList() {
         const outputsList = document.getElementById('outputs-list');
 
         if (data.outputs.length === 0) {
-            outputsList.innerHTML = '<p style="grid-column: 1/-1;">生成済み議事録がありません</p>';
+            outputsList.innerHTML = '<p style="grid-column: 1/-1; text-align: center; padding: 3rem; color: var(--text-secondary); font-size: 1.1rem;">📭 生成済み議事録がありません<br><span style="font-size: 0.9rem; margin-top: 0.5rem; display: block;">動画をアップロードして議事録を生成してください</span></p>';
             return;
         }
 
@@ -442,19 +498,53 @@ async function loadOutputsList() {
             const dateStr = date.toLocaleDateString('ja-JP');
             const timeStr = date.toLocaleTimeString('ja-JP');
 
+            // ファイルタイプの日本語名マッピング
+            const fileTypeNames = {
+                'minutes': '議事録',
+                'enhanced_transcript': '画像付き文字起こし',
+                'transcript': '文字起こし',
+                'legacy': 'ファイル'
+            };
+
             const item = document.createElement('div');
             item.className = 'output-item';
+            
+            // 利用可能なファイルタイプのリストを作成
+            const fileTypesList = Object.keys(output.available_files || {}).map(fileType => {
+                const fileInfo = output.available_files[fileType];
+                const typeName = fileTypeNames[fileType] || fileType;
+                const viewUrl = output.video_id 
+                    ? `/api/view-file/${output.video_id}/${fileType}`
+                    : `/api/view-file/${fileInfo.filename || fileType}`;
+                return `<a href="#" class="file-type-link" data-view-url="${viewUrl}" data-download-url="${fileInfo.url}">${typeName}</a>`;
+            }).join(' | ');
+
             item.innerHTML = `
-                <div class="output-item-name">📄 ${output.filename}</div>
+                <div class="output-item-name">📋 ${output.display_name || output.video_id || '不明'}</div>
                 <div class="output-item-meta">
-                    <div>サイズ: ${formatFileSize(output.size)}</div>
-                    <div>生成: ${dateStr} ${timeStr}</div>
+                    <div><strong>サイズ:</strong> ${formatFileSize(output.size)}</div>
+                    <div><strong>日時:</strong> ${dateStr} ${timeStr}</div>
+                    <div class="file-types">
+                        ${fileTypesList}
+                    </div>
                 </div>
-                <a href="${output.url}" class="output-item-link" download>
-                    📥 ダウンロード
-                </a>
+                <div class="output-item-actions">
+                    <a href="${output.default_url}" class="btn btn-primary output-item-link" download>
+                        📥 ダウンロード
+                    </a>
+                </div>
             `;
             outputsList.appendChild(item);
+            
+            // ファイルタイプリンクにクリックイベントを追加
+            item.querySelectorAll('.file-type-link').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const viewUrl = link.getAttribute('data-view-url');
+                    const downloadUrl = link.getAttribute('data-download-url');
+                    showFileModal(viewUrl, downloadUrl, link.textContent.trim());
+                });
+            });
         });
     } catch (error) {
         console.error('出力一覧取得エラー:', error);
@@ -527,6 +617,94 @@ function startAnnotationProgressPolling(videoId) {
             console.error('❌ 進捗取得エラー:', error);
         }
     }, 1000); // 1秒ごとにポーリング
+}
+
+// ファイル表示モーダル関連
+let currentDownloadUrl = null;
+
+async function showFileModal(viewUrl, downloadUrl, title) {
+    const modal = document.getElementById('file-view-modal');
+    const modalTitle = document.getElementById('modal-title');
+    const modalPreview = document.getElementById('modal-preview-content');
+    const modalMarkdown = document.getElementById('modal-markdown-content');
+    const modalDownloadBtn = document.getElementById('modal-download-btn');
+    
+    if (!modal) {
+        console.error('モーダル要素が見つかりません');
+        return;
+    }
+    
+    // タイトルを設定
+    modalTitle.textContent = title || 'ファイル表示';
+    
+    // ダウンロードURLを保存
+    currentDownloadUrl = downloadUrl;
+    if (modalDownloadBtn) {
+        modalDownloadBtn.href = downloadUrl;
+        modalDownloadBtn.download = '';
+    }
+    
+    // モーダルを表示
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden'; // 背景のスクロールを無効化
+    
+    // ローディング表示
+    modalPreview.innerHTML = '<div style="text-align: center; padding: 2rem;"><div class="spinner" style="margin: 0 auto;"></div><p style="margin-top: 1rem; color: var(--text-secondary);">読み込み中...</p></div>';
+    modalMarkdown.value = '';
+    
+    try {
+        // ファイルを取得
+        const response = await fetch(viewUrl);
+        if (!response.ok) {
+            throw new Error('ファイルの取得に失敗しました');
+        }
+        
+        const data = await response.json();
+        const markdown = data.markdown || '';
+        const videoId = data.video_id;
+        
+        // Markdownを表示
+        modalMarkdown.value = markdown;
+        
+        // プレビューをレンダリング
+        renderMarkdown(markdown, 'modal-preview-content', videoId);
+        
+        // プレビュータブをアクティブに
+        switchModalTab('preview');
+        
+    } catch (error) {
+        console.error('ファイル表示エラー:', error);
+        modalPreview.innerHTML = `<div style="padding: 2rem; text-align: center;"><p style="color: var(--error-color); font-weight: 600;">エラーが発生しました</p><p style="color: var(--text-secondary); margin-top: 0.5rem;">${error.message}</p></div>`;
+    }
+}
+
+function closeFileModal() {
+    const modal = document.getElementById('file-view-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        document.body.style.overflow = ''; // 背景のスクロールを有効化
+    }
+    currentDownloadUrl = null;
+}
+
+function switchModalTab(tabName) {
+    // タブボタンの更新
+    document.querySelectorAll('.modal-tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.tab === tabName) {
+            btn.classList.add('active');
+        }
+    });
+    
+    // タブコンテンツの更新
+    document.querySelectorAll('.modal-tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    
+    const targetTab = document.getElementById(`modal-${tabName}`);
+    if (targetTab) {
+        targetTab.classList.add('active');
+    }
 }
 
 // 定期的に出力一覧を更新

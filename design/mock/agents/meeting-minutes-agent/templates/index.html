@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>議事録エージェント - プロトタイプ</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <!-- Markdownレンダリング用ライブラリ -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -106,7 +109,7 @@
                     </div>
                     <div class="processing-step" id="step-generate">
                         <span class="status-icon">⏳</span>
-                        <span>議事録生成 (Qwen3-VL)</span>
+                        <span>議事録生成 (Groq GPT-OSS-120B)</span>
                     </div>
                 </div>
             </section>
@@ -116,25 +119,31 @@
                 <h2>ステップ 3 & 4: 生成された議事録</h2>
                 
                 <div class="result-tabs">
-                    <button class="tab-btn active" data-tab="preview">プレビュー</button>
-                    <button class="tab-btn" data-tab="minutes">議事録</button>
-                    <button class="tab-btn" data-tab="transcript">文字起こし</button>
+                    <button class="tab-btn active" data-tab="enhanced-transcript-preview">画像付き文字起こし（プレビュー）</button>
+                    <button class="tab-btn" data-tab="enhanced-transcript-md">画像付き文字起こし（Markdown）</button>
+                    <button class="tab-btn" data-tab="minutes-preview">議事録（プレビュー）</button>
+                    <button class="tab-btn" data-tab="minutes-md">議事録（Markdown）</button>
                     <button class="tab-btn" data-tab="json">JSON</button>
                 </div>
 
-                <!-- プレビュータブ -->
-                <div class="tab-content active" id="tab-preview">
-                    <div id="minutes-preview" class="minutes-preview"></div>
+                <!-- 画像付き文字起こしプレビュー -->
+                <div class="tab-content active" id="tab-enhanced-transcript-preview">
+                    <div id="enhanced-transcript-preview" class="markdown-preview"></div>
                 </div>
 
-                <!-- 議事録Markdownタブ -->
-                <div class="tab-content" id="tab-minutes">
-                    <textarea id="markdown-content" class="code-editor" readonly></textarea>
+                <!-- 画像付き文字起こしMarkdown -->
+                <div class="tab-content" id="tab-enhanced-transcript-md">
+                    <textarea id="enhanced-transcript-md-content" class="code-editor" readonly></textarea>
                 </div>
 
-                <!-- 文字起こしMarkdownタブ（新規） -->
-                <div class="tab-content" id="tab-transcript">
-                    <textarea id="transcript-content" class="code-editor" readonly></textarea>
+                <!-- 議事録プレビュー -->
+                <div class="tab-content" id="tab-minutes-preview">
+                    <div id="minutes-preview" class="markdown-preview"></div>
+                </div>
+
+                <!-- 議事録Markdown -->
+                <div class="tab-content" id="tab-minutes-md">
+                    <textarea id="minutes-md-content" class="code-editor" readonly></textarea>
                 </div>
 
                 <!-- JSONタブ -->
@@ -156,7 +165,11 @@
             <section class="section history-section" id="history-section">
                 <h2>📋 生成済み議事録</h2>
                 <div id="outputs-list" class="outputs-list">
-                    <p>生成済み議事録がありません</p>
+                    <div class="no-outputs-message" style="grid-column: 1/-1; text-align: center; padding: 3rem; color: var(--text-secondary); font-size: 1.1rem; line-height: 1.6;">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">📭</div>
+                        <p>生成済み議事録がありません</p>
+                        <p style="font-size: 0.9rem; margin-top: 0.5rem; opacity: 0.8;">動画をアップロードして議事録を生成してください</p>
+                    </div>
                 </div>
             </section>
         </main>
@@ -173,12 +186,38 @@
                     <li>✅ 動画ファイルのアップロード</li>
                     <li>🔄 音声抽出と文字起こし (Groq Whisper API)</li>
                     <li>🖼️ キーフレーム検出</li>
-                    <li>🧠 マルチモーダルLLM (Qwen3-VL) による議事録生成</li>
+                    <li>🧠 マルチモーダルLLM (Groq GPT-OSS-120B) による議事録生成</li>
                     <li>📝 Markdown形式での保存</li>
                     <li>☁️ Notion/GitHub/Google Drive への自動保存</li>
                 </ul>
             </div>
         </aside>
+    </div>
+
+    <!-- ファイル表示モーダル（既存の構造を維持し、プレビューを強調） -->
+    <div id="file-view-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">ファイル表示</h2>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-tabs">
+                    <button class="modal-tab-btn active" data-tab="preview">プレビュー</button>
+                    <button class="modal-tab-btn" data-tab="markdown">Markdown</button>
+                </div>
+                <div class="modal-tab-content active" id="modal-preview">
+                    <div id="modal-preview-content" class="markdown-preview"></div>
+                </div>
+                <div class="modal-tab-content" id="modal-markdown">
+                    <textarea id="modal-markdown-content" class="code-editor" readonly></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <a id="modal-download-btn" class="btn btn-primary download-btn" download>📥 ダウンロード</a>
+                <button class="btn btn-secondary" id="modal-close-btn">閉じる</button>
+            </div>
+        </div>
     </div>
 
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>

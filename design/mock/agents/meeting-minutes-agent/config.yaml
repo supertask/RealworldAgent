@@ -5,12 +5,12 @@
 # ================================================
 # 1. 音声処理設定
 # ================================================
-audio_extraction_enabled: false
+audio_extraction_enabled: true
   # 説明: 動画から音声を抽出するかどうか
   # true: 音声抽出を実行
   # false: 音声抽出をスキップ（テスト用）
 
-transcription_enabled: false
+transcription_enabled: true
   # 説明: 音声を文字起こしするかどうか
   # true: Groq Whisper APIで文字起こしを実行
   # false: ダミーテキストを使用
@@ -49,15 +49,25 @@ transnetv2:
 # ================================================
 # 3. 議事録生成設定
 # ================================================
-minutes_generation_enabled: false
+minutes_generation_enabled: true
   # 説明: 議事録を生成するかどうか
-  # true: Qwen3-VLまたはOpenAIで生成
+  # true: Groq GPT-OSS-120Bで生成
   # false: ダミーデータを使用
 
-minutes_generation_method: "qwen3vl"
+minutes_generation_method: "groq"
   # 説明: 議事録生成の手法
-  # "qwen3vl": マルチモーダルLLM（画像+テキスト、推奨）
+  # "groq": Groq GPT-OSS-120B（推奨）
   # "openai": GPT-4テキストのみ
+
+# 文字起こし拡張設定
+transcript_enhancement_enabled: true
+  # 説明: 画像情報を含む拡張文字起こしを生成するかどうか
+  # true: Groq GPT-OSS-120Bで拡張
+  # false: 元の文字起こしを使用
+
+# Groq API設定
+groq_model: "openai/gpt-oss-120b"
+  # 説明: Groq Cloudで使用するモデル名
 
 # ================================================
 # 4. 画像処理設定
