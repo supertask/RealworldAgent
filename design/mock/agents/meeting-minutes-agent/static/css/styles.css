@@ -333,10 +333,22 @@ body {
 .status-icon {
     font-size: 1.2rem;
     min-width: 2rem;
+    font-weight: bold;
+    transition: color 0.3s ease;
+    display: inline-block;
 }
 
 .processing-step.completed .status-icon {
-    content: '✓';
+    color: var(--success-color);
+}
+
+.processing-step:not(.completed) .status-icon {
+    color: var(--text-secondary);
+}
+
+.processing-step[style*="opacity: 0.5"] .status-icon {
+    color: var(--text-secondary);
+    opacity: 0.6;
 }
 
 /* アノテーション進捗 */

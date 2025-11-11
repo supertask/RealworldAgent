@@ -285,11 +285,20 @@ function startProcessingProgressPolling(videoId) {
                 if (!element) continue;
                 
                 if (!stepInfo || !stepInfo.enabled) {
-                    // 無効な場合はスキップ表示
+                    // 無効な場合はスキップ表示（より明確に）
                     element.style.opacity = '0.5';
                     element.style.textDecoration = 'line-through';
                     const icon = element.querySelector('.status-icon');
-                    if (icon) icon.textContent = '—';
+                    if (icon) {
+                        icon.textContent = '⊘';
+                        icon.style.color = 'var(--text-secondary)';
+                    }
+                    // テキストに「(スキップ)」を追加
+                    const textSpan = element.querySelector('span:last-child');
+                    if (textSpan && !textSpan.textContent.includes('スキップ')) {
+                        const originalText = textSpan.textContent.replace(' (スキップ)', '');
+                        textSpan.textContent = originalText + ' (スキップ)';
+                    }
                     continue;
                 }
                 
@@ -297,19 +306,33 @@ function startProcessingProgressPolling(videoId) {
                 const icon = element.querySelector('.status-icon');
                 if (!icon) continue;
                 
+                // テキストから「(スキップ)」を削除（有効な場合）
+                const textSpan = element.querySelector('span:last-child');
+                if (textSpan && textSpan.textContent.includes(' (スキップ)')) {
+                    textSpan.textContent = textSpan.textContent.replace(' (スキップ)', '');
+                }
+                
                 if (stepInfo.status === 'completed') {
                     element.classList.add('completed');
                     icon.textContent = '✓';
+                    icon.style.color = 'var(--success-color)';
                 } else if (stepInfo.status === 'in_progress') {
                     element.classList.remove('completed');
                     icon.textContent = '⏳';
+                    icon.style.color = 'var(--primary-color)';
                 } else if (stepInfo.status === 'skipped') {
                     element.style.opacity = '0.5';
-                    icon.textContent = '—';
+                    icon.textContent = '⊘';
+                    icon.style.color = 'var(--text-secondary)';
+                    if (textSpan && !textSpan.textContent.includes('スキップ')) {
+                        const originalText = textSpan.textContent.replace(' (スキップ)', '');
+                        textSpan.textContent = originalText + ' (スキップ)';
+                    }
                 } else {
                     // not_started
                     element.classList.remove('completed');
-                    icon.textContent = '⏳';
+                    icon.textContent = '○';
+                    icon.style.color = 'var(--text-secondary)';
                 }
             }
             
@@ -641,8 +664,8 @@ function startAnnotationProgressPolling(videoId) {
         return;
     }
     
-    // 進捗表示を有効化
-    progressContainer.style.display = 'block';
+    // 進捗表示は処理が開始されるまで非表示
+    progressContainer.style.display = 'none';
     annotationStep.classList.add('active');
     
     // ポーリング開始
@@ -652,6 +675,11 @@ function startAnnotationProgressPolling(videoId) {
             const progress = await response.json();
             
             if (progress.status === 'in_progress' || progress.status === 'completed') {
+                // 処理が開始されたら進捗表示を有効化
+                if (progressContainer.style.display === 'none') {
+                    progressContainer.style.display = 'block';
+                }
+                
                 // 進捗バー更新
                 const percentage = progress.percentage || 0;
                 if (progressBar) progressBar.style.width = percentage + '%';
@@ -667,7 +695,10 @@ function startAnnotationProgressPolling(videoId) {
                     if (annotationStep) {
                         annotationStep.classList.add('completed');
                         const icon = annotationStep.querySelector('.status-icon');
-                        if (icon) icon.textContent = '✓';
+                        if (icon) {
+                            icon.textContent = '✓';
+                            icon.style.color = 'var(--success-color)';
+                        }
                     }
                     if (annotationProgressInterval) {
                         clearInterval(annotationProgressInterval);
@@ -676,11 +707,19 @@ function startAnnotationProgressPolling(videoId) {
                     console.log('✅ アノテーション完了');
                 } else {
                     const icon = annotationStep?.querySelector('.status-icon');
-                    if (icon) icon.textContent = '⏳';
+                    if (icon) {
+                        icon.textContent = '⏳';
+                        icon.style.color = 'var(--primary-color)';
+                    }
                 }
             } else if (progress.status === 'not_started') {
-                // まだ開始していない
-                if (progressText) progressText.textContent = 'アノテーション待機中...';
+                // まだ開始していない場合は進捗表示を非表示
+                progressContainer.style.display = 'none';
+                const icon = annotationStep?.querySelector('.status-icon');
+                if (icon) {
+                    icon.textContent = '○';
+                    icon.style.color = 'var(--text-secondary)';
+                }
             }
         } catch (error) {
             console.error('❌ 進捗取得エラー:', error);
