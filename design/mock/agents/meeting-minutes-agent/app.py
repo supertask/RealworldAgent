@@ -714,7 +714,7 @@ def call_groq_chat_completion(messages, model="openai/gpt-oss-120b", max_tokens=
 
 
 def generate_transcript_with_groq(transcript_data, keyframes, image_annotations=None):
-    """Groq GPT-OSS-120Bで画像情報を含む拡張文字起こしを生成
+    """Groq GPT-OSS-120Bで画像詳細を含む拡張文字起こしを生成
     
     Args:
         transcript_data: 音声文字起こしデータ（segments含む）
@@ -761,9 +761,9 @@ def generate_transcript_with_groq(transcript_data, keyframes, image_annotations=
                         if annotation:
                             related_annotations.append(annotation)
             
-            # 画像情報をテキスト形式で準備（visual_changes含む）
+            # 画像詳細をテキスト形式で準備（visual_changes含む）
             image_contexts = []
-            for kf in related_keyframes[:3]:  # 最大3枚まで
+            for kf in related_keyframes:  # すべての関連画像
                 timestamp = kf.get('timestamp', 0)
                 
                 # アノテーション情報があれば追加（visual_changes含む）
@@ -792,13 +792,13 @@ def generate_transcript_with_groq(transcript_data, keyframes, image_annotations=
                 image_contexts.append(annotation_text if annotation_text else f"画像 ({timestamp:.1f}秒時点): アノテーション情報なし\n")
             
             # Groq APIで拡張文字起こしを生成
-            prompt = f"""以下の音声文字起こしセグメントと、対応する画像情報を統合して、より詳細な文字起こしを作成してください。
+            prompt = f"""以下の音声文字起こしセグメントと、対応する画像詳細を統合して、より詳細な文字起こしを作成してください。
 
 音声文字起こし:
 [{start_time:.1f}秒 - {end_time:.1f}秒] {text}
 
-関連画像情報:
-{''.join(image_contexts) if image_contexts else '画像情報なし'}
+関連画像詳細:
+{''.join(image_contexts) if image_contexts else '画像詳細なし'}
 
 出力形式:
 - 元の音声内容を保持
@@ -813,7 +813,7 @@ def generate_transcript_with_groq(transcript_data, keyframes, image_annotations=
                 enhanced_text = call_groq_chat_completion([
                     {
                         'role': 'system',
-                        'content': 'あなたは会議の文字起こしを画像情報と統合して拡張する専門家です。画像の内容やフレーム間の変化も考慮してください。'
+                        'content': 'あなたは会議の文字起こしを画像詳細と統合して拡張する専門家です。画像の内容やフレーム間の変化も考慮してください。'
                     },
                     {
                         'role': 'user',
@@ -1447,13 +1447,14 @@ def generate_batch_plan(keyframes, video_subfolder, max_images_per_batch=6, over
     return batch_plan_path
 
 
-def annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder):
+def annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder, annotation_progress_path=None):
     """LM Studio Qwen3-VL 8Bで画像をアノテーション
     
     Args:
         image_paths: 画像ファイルパスのリスト
         batch_id: バッチID
         video_subfolder: 出力フォルダ
+        annotation_progress_path: 進捗情報ファイルパス（オプション）
     
     Returns:
         アノテーション結果のリスト
@@ -1484,6 +1485,18 @@ def annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder):
     
     for idx, image_path in enumerate(image_paths):
         try:
+            # 進捗情報を更新
+            if annotation_progress_path and os.path.exists(annotation_progress_path):
+                try:
+                    with open(annotation_progress_path, 'r', encoding='utf-8') as f:
+                        progress = json.load(f)
+                    progress["current_image_index"] = idx + 1
+                    progress["current_image"] = image_path
+                    with open(annotation_progress_path, 'w', encoding='utf-8') as f:
+                        json.dump(progress, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    print(f"⚠️ 進捗情報更新エラー: {e}")
+            
             # 画像をBase64エンコード
             full_image_path = os.path.join(video_subfolder, image_path)
             if not os.path.exists(full_image_path):
@@ -1647,6 +1660,18 @@ def generate_image_annotations(batch_plan_path, video_subfolder, keyframes):
     
     print(f"📝 アノテーション結果統合開始: {len(batch_plan['batches'])}バッチ")
     
+    # frame_metadata.jsonを読み込んで、idからframe_numberのマッピングを取得
+    frame_id_to_frame_number = {}
+    frame_metadata_path = os.path.join(video_subfolder, 'frame_metadata.json')
+    if os.path.exists(frame_metadata_path):
+        with open(frame_metadata_path, 'r', encoding='utf-8') as f:
+            frame_metadata = json.load(f)
+            for kf in frame_metadata.get('keyframes', []):
+                frame_id = kf.get('id')
+                frame_number = kf.get('frame_number')
+                if frame_id is not None and frame_number is not None:
+                    frame_id_to_frame_number[frame_id] = frame_number
+    
     annotations = []
     frame_id_to_keyframe = {kf.get('id', idx+1): kf for idx, kf in enumerate(keyframes)}
     
@@ -1674,9 +1699,15 @@ def generate_image_annotations(batch_plan_path, video_subfolder, keyframes):
             result = batch_results[idx]
             keyframe = frame_id_to_keyframe.get(frame_id, {})
             
+            # frame_numberを取得（frame_metadata.jsonから、またはkeyframeから）
+            frame_number = frame_id_to_frame_number.get(frame_id)
+            if frame_number is None:
+                # frame_metadata.jsonにない場合は、keyframeから取得を試みる
+                frame_number = keyframe.get('frame_number') or keyframe.get('frame_index', 0)
+            
             annotation = {
                 "id": frame_id,
-                "frame_number": keyframe.get('frame_number', 0),
+                "frame_number": frame_number,
                 "image_path": image_paths[idx] if idx < len(image_paths) else f'keyframe_{frame_id:04d}.jpg',
                 "quality": {
                     "status": result.get("status", "unknown"),
@@ -1791,7 +1822,7 @@ def transcript_to_markdown(transcript_data, keyframes, video_id):
 
 
 def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_id, image_annotations=None):
-    """拡張文字起こしをMarkdown形式に変換（画像情報・visual_changes含む）
+    """拡張文字起こしをMarkdown形式に変換（画像詳細・visual_changes含む）
     
     Args:
         enhanced_transcript_data: 拡張された文字起こしデータ
@@ -1813,13 +1844,19 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
     
     segments = enhanced_transcript_data.get("segments", [])
     
-    # アノテーションIDマッピングを作成
-    annotation_map = {}
+    # frame_metadata.jsonを読み込んで、idからframe_numberのマッピングを取得
+    # （keyframesのframe_indexとimage_annotationsのframe_numberをマッピングするため）
+    frame_id_to_frame_number_map = {}
+    # video_idからframe_metadata.jsonのパスを推測（keyframesからvideo_idを取得できない場合のため）
+    # 実際には、keyframesにidが含まれているので、それを使用
+    
+    # アノテーションIDマッピングを作成（frame_numberでマッピング）
+    annotation_map_by_frame_number = {}
     if image_annotations:
         for ann in image_annotations.get('annotations', []):
             frame_number = ann.get('frame_number')
             if frame_number is not None:
-                annotation_map[frame_number] = ann
+                annotation_map_by_frame_number[frame_number] = ann
     
     # セグメントごとに処理
     for segment in segments:
@@ -1828,7 +1865,8 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
         original_text = segment.get('original_text', segment.get('text', ''))
         has_visual_changes = segment.get('has_visual_changes', False)
         
-        # タイムスタンプ付きテキスト
+        # タイムスタンプ付きテキスト（セクション開始）
+        markdown += f'<div class="transcript-section">\n\n'
         markdown += f"**[{start_time:.1f}秒 - {end_time:.1f}秒]**\n\n"
         markdown += f"{original_text}\n\n"
         
@@ -1838,52 +1876,55 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
             if abs(kf.get('timestamp', 0) - start_time) <= 3.0
         ]
         
-        # 画像を先に表示
+        # 画像を表示（各画像の下に個別に映像情報を表示）
         if related_keyframes:
-            for kf in related_keyframes[:3]:  # 最大3枚まで
+            for kf in related_keyframes:  # すべての関連画像を表示
                 image_name = kf.get('image', '')
                 timestamp = kf.get('timestamp', 0)
+                frame_index = kf.get('frame_index')
+                frame_number = kf.get('frame_number')
                 
                 if image_name:
-                    markdown += f"![{image_name}]({image_name})\n\n"
-                    markdown += f"*{timestamp:.1f}秒*\n\n"
-            
-            # 映像情報を折りたたみ可能に
-            markdown += "<details>\n<summary>▶︎ 映像情報</summary>\n\n"
-            
-            for kf in related_keyframes[:3]:
-                timestamp = kf.get('timestamp', 0)
-                frame_index = kf.get('frame_index')
-                
-                # アノテーション情報を取得
-                if frame_index is not None and frame_index in annotation_map:
-                    ann = annotation_map[frame_index]
-                    ann_data = ann.get('annotation', {})
+                    # 画像をdivで囲み、タイムスタンプを右下に配置
+                    markdown += f'<div class="image-with-timestamp">\n'
+                    markdown += f'<img src="{image_name}" alt="{image_name}" />\n'
+                    markdown += f'<span class="image-timestamp">{timestamp:.1f}秒</span>\n'
+                    markdown += f'</div>\n\n'
                     
-                    # シーンの説明
-                    if ann_data.get('scene'):
-                        markdown += f"**{timestamp:.1f}秒時点**: {ann_data['scene']}\n\n"
+                    # この画像の映像情報を取得
+                    search_key = frame_index if frame_index is not None else frame_number
+                    ann = None
+                    if search_key is not None and search_key in annotation_map_by_frame_number:
+                        ann = annotation_map_by_frame_number[search_key]
                     
-                    # 検出オブジェクト
-                    if ann_data.get('objects'):
-                        markdown += f"- **検出オブジェクト**: {', '.join(ann_data['objects'])}\n"
-                    
-                    # 検出テキスト
-                    if ann_data.get('text'):
-                        text_items = [t.get('content', '') for t in ann_data['text'] if t.get('content')]
-                        if text_items:
-                            markdown += f"- **検出テキスト**: {', '.join(text_items)}\n"
-                    
-                    # visual_changes
-                    visual_changes = ann_data.get('visual_changes', [])
-                    if visual_changes:
-                        markdown += f"- **前フレームからの変化**: {', '.join(visual_changes)}\n"
-                    
-                    markdown += "\n"
-            
-            markdown += "</details>\n\n"
+                    # 映像情報を折りたたみ可能に表示（各画像の下に個別に）
+                    if ann:
+                        ann_data = ann.get('annotation', {})
+                        if ann_data.get('scene') or ann_data.get('objects') or ann_data.get('text') or ann_data.get('visual_changes'):
+                            markdown += f"<details class=\"video-info-details\">\n<summary>画像詳細：{timestamp:.1f}秒</summary>\n\n"
+                            
+                            # シーンの説明
+                            if ann_data.get('scene'):
+                                markdown += f"**{timestamp:.1f}秒時点**: {ann_data['scene']}\n\n"
+                            
+                            # 検出オブジェクト
+                            if ann_data.get('objects'):
+                                markdown += f"- **検出オブジェクト**: {', '.join(ann_data['objects'])}\n"
+                            
+                            # 検出テキスト
+                            if ann_data.get('text'):
+                                text_items = [t.get('content', '') for t in ann_data['text'] if t.get('content')]
+                                if text_items:
+                                    markdown += f"- **検出テキスト**: {', '.join(text_items)}\n"
+                            
+                            # visual_changes
+                            visual_changes = ann_data.get('visual_changes', [])
+                            if visual_changes:
+                                markdown += f"- **前フレームからの変化**: {', '.join(visual_changes)}\n"
+                            
+                            markdown += "\n</details>\n\n"
         
-        markdown += "---\n\n"
+        markdown += "</div>\n\n---\n\n"
     
     markdown += f"\n*文字&シーン起こしは自動生成されました。生成日時: {now.strftime('%Y-%m-%d %H:%M:%S')}*\n"
     
@@ -2170,11 +2211,19 @@ def generate_minutes_endpoint(video_id):
                 batch_id = batch['batch_id']
                 image_paths = batch['image_paths']
                 annotation_progress["current_batch"] = batch_id
+                annotation_progress["current_batch_images"] = image_paths
+                annotation_progress["current_image_index"] = 0
+                annotation_progress["current_image"] = None
+                
+                # 進捗情報を保存
+                annotation_progress_path = os.path.join(video_subfolder, 'annotation_progress.json')
+                with open(annotation_progress_path, 'w', encoding='utf-8') as f:
+                    json.dump(annotation_progress, f, ensure_ascii=False, indent=2)
                 
                 print(f"📦 バッチ{batch_id}/{len(batch_plan['batches'])}処理中...")
                 
                 # アノテーション実行
-                batch_results = annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder)
+                batch_results = annotate_images_with_lm_studio(image_paths, batch_id, video_subfolder, annotation_progress_path)
                 
                 # バッチ結果を保存
                 batch_result_path = os.path.join(video_subfolder, f'batch_{batch_id}_results.json')
@@ -2182,6 +2231,12 @@ def generate_minutes_endpoint(video_id):
                     json.dump(batch_results, f, ensure_ascii=False, indent=2)
                 
                 annotation_progress["completed_frames"] += len([r for r in batch_results if r.get("status") == "success"])
+                
+                # バッチ処理完了後、進捗情報を更新
+                annotation_progress["current_image_index"] = 0
+                annotation_progress["current_image"] = None
+                with open(annotation_progress_path, 'w', encoding='utf-8') as f:
+                    json.dump(annotation_progress, f, ensure_ascii=False, indent=2)
             
             # アノテーション結果を統合
             print("📝 アノテーション結果統合中...")

@@ -79,15 +79,10 @@ function setupEventListeners() {
     // モーダルのイベントリスナー
     const modal = document.getElementById('file-view-modal');
     const modalClose = document.getElementById('modal-close');
-    const modalCloseBtn = document.getElementById('modal-close-btn');
     const modalTabBtns = document.querySelectorAll('.modal-tab-btn');
     
     if (modalClose) {
         modalClose.addEventListener('click', closeFileModal);
-    }
-    
-    if (modalCloseBtn) {
-        modalCloseBtn.addEventListener('click', closeFileModal);
     }
     
     // モーダル外をクリックで閉じる
@@ -454,9 +449,12 @@ function renderMarkdown(markdown, containerId, videoId = null) {
     // marked.jsでMarkdownをHTMLに変換
     if (typeof marked !== 'undefined') {
         const html = marked.parse(markdown);
-        // DOMPurifyでサニタイズ
+        // DOMPurifyでサニタイズ（div, span, details, summaryタグを許可）
         if (typeof DOMPurify !== 'undefined') {
-            container.innerHTML = DOMPurify.sanitize(html);
+            container.innerHTML = DOMPurify.sanitize(html, {
+                ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'a', 'img', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'details', 'summary', 'div', 'span'],
+                ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'open']
+            });
         } else {
             container.innerHTML = html;
         }
@@ -472,6 +470,35 @@ function renderMarkdown(markdown, containerId, videoId = null) {
                 }
             }
         });
+        
+        // h1タグからファイル名を抽出して生成日時のpタグに移動
+        const h1Element = container.querySelector('h1');
+        if (h1Element) {
+            const h1Text = h1Element.textContent;
+            // 「文字&シーン起こし - ファイル名」の形式からファイル名を抽出
+            const match = h1Text.match(/[-–—]\s*(.+)$/);
+            if (match) {
+                const fileName = match[1].trim();
+                // h1からファイル名部分を削除（「文字&シーン起こし」のみ残す）
+                h1Element.textContent = h1Text.replace(/[-–—]\s*.+$/, '').trim();
+                
+                // 生成日時のpタグを探してファイル名を追加
+                const paragraphs = container.querySelectorAll('p');
+                for (const p of paragraphs) {
+                    const text = p.textContent;
+                    if (text.includes('生成日時') || text.includes('日時')) {
+                        // ファイル名を追加
+                        const dateMatch = text.match(/(生成日時|日時):\s*(.+)/);
+                        if (dateMatch) {
+                            p.innerHTML = `${dateMatch[1]}: ${dateMatch[2]} | <strong>${fileName}</strong>`;
+                        } else {
+                            p.innerHTML = `${text} | <strong>${fileName}</strong>`;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
     } else {
         container.innerHTML = '<pre>' + escapeHtml(markdown) + '</pre>';
     }
@@ -657,6 +684,7 @@ function startAnnotationProgressPolling(videoId) {
     const progressContainer = document.getElementById('annotation-progress');
     const progressBar = document.getElementById('progress-bar-fill');
     const progressText = document.getElementById('progress-text');
+    const progressStatus = document.getElementById('progress-status');
     const detailsList = document.getElementById('progress-details-list');
     
     if (!annotationStep || !progressContainer) {
@@ -684,6 +712,27 @@ function startAnnotationProgressPolling(videoId) {
                 const percentage = progress.percentage || 0;
                 if (progressBar) progressBar.style.width = percentage + '%';
                 
+                // 現在処理中の画像詳細を表示
+                if (progressStatus) {
+                    const currentImage = progress.current_image;
+                    const currentImageIndex = progress.current_image_index || 0;
+                    const currentBatchImages = progress.current_batch_images || [];
+                    const totalBatchImages = currentBatchImages.length;
+                    
+                    if (currentImage && totalBatchImages > 0) {
+                        progressStatus.textContent = 
+                            `処理中: ${currentImage} (${currentImageIndex}/${totalBatchImages})`;
+                        progressStatus.style.color = 'var(--primary-color)';
+                    } else if (progress.current_batch > 0) {
+                        progressStatus.textContent = 
+                            `バッチ ${progress.current_batch} / ${progress.total_batches} 準備中...`;
+                        progressStatus.style.color = 'var(--text-secondary)';
+                    } else {
+                        progressStatus.textContent = '準備中...';
+                        progressStatus.style.color = 'var(--text-secondary)';
+                    }
+                }
+                
                 // テキスト更新
                 if (progressText) {
                     progressText.textContent = 
@@ -692,6 +741,10 @@ function startAnnotationProgressPolling(videoId) {
                 
                 // ステップアイコン更新
                 if (progress.status === 'completed') {
+                    if (progressStatus) {
+                        progressStatus.textContent = '✅ アノテーション完了';
+                        progressStatus.style.color = 'var(--success-color)';
+                    }
                     if (annotationStep) {
                         annotationStep.classList.add('completed');
                         const icon = annotationStep.querySelector('.status-icon');
@@ -736,7 +789,6 @@ let currentModalData = {
 
 async function showFileModal(viewUrl, downloadUrl, title) {
     const modal = document.getElementById('file-view-modal');
-    const modalTitle = document.getElementById('modal-title');
     const modalPreview = document.getElementById('modal-preview-content');
     const modalMarkdown = document.getElementById('modal-markdown-content');
     const modalDownloadBtn = document.getElementById('modal-download-btn');
@@ -746,10 +798,9 @@ async function showFileModal(viewUrl, downloadUrl, title) {
         return;
     }
     
-    // タイトルを設定（動画IDのみ）
+    // 動画IDを取得
     const videoIdMatch = viewUrl.match(/\/api\/view-file\/([^/]+)\//);
     const videoId = videoIdMatch ? videoIdMatch[1] : null;
-    modalTitle.textContent = videoId || 'ファイル表示';
     
     // モーダルを表示
     modal.style.display = 'flex';
@@ -862,7 +913,6 @@ function switchModalViewTab(viewType) {
 // 生成完了後にモーダルを表示する関数
 function showGeneratedMinutesModal(videoId, enhancedTranscriptMarkdown, minutesMarkdown) {
     const modal = document.getElementById('file-view-modal');
-    const modalTitle = document.getElementById('modal-title');
     
     if (!modal) {
         console.error('モーダル要素が見つかりません');
@@ -878,9 +928,6 @@ function showGeneratedMinutesModal(videoId, enhancedTranscriptMarkdown, minutesM
     currentModalData.enhanced_transcript.downloadUrl = `/api/download-minutes/${videoPrefix}/enhanced_transcript`;
     currentModalData.minutes.markdown = minutesMarkdown;
     currentModalData.minutes.downloadUrl = `/api/download-minutes/${videoPrefix}/minutes`;
-    
-    // タイトル設定
-    modalTitle.textContent = videoId || '生成された議事録';
     
     // 最初は文字&シーン起こしを表示
     switchModalFileTab('enhanced_transcript');

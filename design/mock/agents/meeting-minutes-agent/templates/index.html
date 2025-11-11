@@ -97,6 +97,7 @@
                         <span class="status-icon">○</span>
                         <span>アノテーション</span>
                         <div class="annotation-progress" id="annotation-progress" style="display: none;">
+                            <p class="progress-status" id="progress-status">準備中...</p>
                             <div class="progress-bar-container">
                                 <div class="progress-bar-fill" id="progress-bar-fill"></div>
                             </div>
@@ -197,15 +198,17 @@
     <!-- ファイル表示モーダル（2段階タブ構造） -->
     <div id="file-view-modal" class="modal">
         <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="modal-title">ファイル表示</h2>
-                <button class="modal-close" id="modal-close">&times;</button>
-            </div>
             <div class="modal-body">
                 <!-- 第1レベルタブ: ファイルタイプ -->
                 <div class="modal-file-tabs">
-                    <button class="modal-file-tab-btn active" data-file-type="enhanced_transcript">文字&シーン起こし</button>
-                    <button class="modal-file-tab-btn" data-file-type="minutes">議事録</button>
+                    <div class="modal-file-tabs-left">
+                        <button class="modal-file-tab-btn active" data-file-type="enhanced_transcript">文字&シーン起こし</button>
+                        <button class="modal-file-tab-btn" data-file-type="minutes">議事録</button>
+                    </div>
+                    <div class="modal-file-tabs-right">
+                        <a id="modal-download-btn" class="modal-download-icon" download title="ダウンロード">📥</a>
+                        <button class="modal-close" id="modal-close">&times;</button>
+                    </div>
                 </div>
                 
                 <!-- 第2レベルタブ: 表示形式 -->
@@ -219,10 +222,6 @@
                     <div id="modal-preview-content" class="markdown-preview active"></div>
                     <textarea id="modal-markdown-content" class="code-editor" readonly></textarea>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <a id="modal-download-btn" class="btn btn-primary download-btn" download>📥 ダウンロード</a>
-                <button class="btn btn-secondary" id="modal-close-btn">閉じる</button>
             </div>
         </div>
     </div>

@@ -360,6 +360,13 @@ body {
     text-align: left;
 }
 
+.progress-status {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+}
+
 .progress-bar-container {
     width: 100%;
     height: 8px;
@@ -712,10 +719,6 @@ body {
         background-color: #1f2937;
     }
 
-    .modal-header {
-        background: #111827;
-    }
-
     .modal-body {
         background: #1f2937;
     }
@@ -736,25 +739,28 @@ body {
     height: 100%;
     background-color: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     animation: fadeIn 0.2s ease;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
 }
 
 .modal-content {
     background-color: white;
-    margin: auto;
+    margin: 0;
     padding: 0;
-    border-radius: 12px;
-    width: 90%;
-    max-width: 1000px;
-    max-height: 90vh;
+    border-radius: 16px;
+    width: 95%;
+    max-width: 1300px;
+    max-height: calc(100vh - 2rem);
     display: flex;
     flex-direction: column;
     box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
     animation: slideUp 0.3s ease;
     line-height: 1.6;
     font-size: 14px;
+    overflow: hidden;
 }
 
 @keyframes slideUp {
@@ -768,28 +774,29 @@ body {
     }
 }
 
-.modal-header {
-    padding: 1.5rem;
-    border-bottom: 1px solid var(--border-color);
+.modal-download-icon {
+    font-size: 1.25rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: all 0.2s ease;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    background: var(--bg-secondary);
-    border-radius: 12px 12px 0 0;
-    user-select: none;
+    justify-content: center;
+    line-height: 1;
 }
 
-.modal-header h2 {
-    margin: 0;
-    font-size: 1.5rem;
-    color: var(--text-primary);
-    font-weight: 600;
+.modal-download-icon:hover {
+    color: var(--primary-color);
+    background: rgba(99, 102, 241, 0.1);
 }
 
 .modal-close {
     background: none;
     border: none;
-    font-size: 2rem;
+    font-size: 1.5rem;
     cursor: pointer;
     color: var(--text-secondary);
     padding: 0;
@@ -798,18 +805,23 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    line-height: 1;
+    border-radius: 4px;
+    transition: all 0.2s ease;
 }
 
 .modal-close:hover {
     color: var(--text-primary);
+    background: rgba(0, 0, 0, 0.05);
 }
 
 .modal-body {
-    padding: 1.5rem;
+    padding: 0 1.5rem 1.5rem;
     overflow-y: auto;
     flex: 1;
     background: var(--bg-secondary);
     color: var(--text-primary);
+    min-height: 0;
 }
 
 .modal-body::-webkit-scrollbar {
@@ -865,15 +877,6 @@ body {
     display: block;
 }
 
-.modal-footer {
-    padding: 1.5rem;
-    border-top: 1px solid var(--border-color);
-    display: flex;
-    justify-content: flex-end;
-    gap: 1rem;
-    background: var(--bg-secondary);
-    border-radius: 0 0 12px 12px;
-}
 
 .markdown-preview {
     padding: 1.5rem;
@@ -896,7 +899,7 @@ body {
 }
 
 .markdown-preview h1 {
-    font-size: 1.75rem;
+    font-size: 1.35rem;
     border-bottom: 2px solid var(--border-color);
     padding-bottom: 0.5rem;
 }
@@ -952,7 +955,16 @@ body {
 .markdown-preview img {
     max-width: 100%;
     height: auto;
-    margin: 1rem 0;
+    margin: 1rem 0 0.25rem 0;
+}
+
+/* 画像の直後にdetailsが来る場合のスペース調整 */
+.markdown-preview .image-with-timestamp + details.video-info-details {
+    margin-top: 0;
+}
+
+.markdown-preview img + details.video-info-details {
+    margin-top: 0;
 }
 
 .output-item-actions {
@@ -1016,21 +1028,40 @@ body {
 /* モーダルの2段階タブスタイル */
 .modal-file-tabs {
     display: flex;
+    justify-content: space-between;
+    align-items: center;
     gap: 0.5rem;
-    margin-bottom: 1rem;
-    border-bottom: 2px solid var(--border-color);
+    margin-bottom: 0.25rem;
+    margin-left: -1.5rem;
+    margin-right: -1.5rem;
+    padding: 0.375rem 1.5rem;
     user-select: none;
+    background: var(--bg-secondary);
+    border-radius: 16px 16px 0 0;
+    flex-shrink: 0;
+}
+
+.modal-file-tabs-left {
+    display: flex;
+    gap: 0.5rem;
+    flex: 1;
+}
+
+.modal-file-tabs-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
 }
 
 .modal-file-tab-btn {
     background: none;
     border: none;
-    padding: 0.875rem 1.5rem;
+    padding: 0.375rem 0.875rem;
     cursor: pointer;
     color: var(--text-secondary);
     border-bottom: 3px solid transparent;
     transition: all 0.2s;
-    font-size: 1rem;
+    font-size: 0.85rem;
     font-weight: 600;
 }
 
@@ -1048,21 +1079,22 @@ body {
 .modal-view-tabs {
     display: flex;
     gap: 0.5rem;
-    margin-bottom: 1rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 0.5rem;
+    margin-left: -1.5rem;
+    padding-left: 1.5rem;
     user-select: none;
+    flex-shrink: 0;
 }
 
 .modal-view-tab-btn {
     background: none;
     border: none;
-    padding: 0.5rem 1rem;
+    padding: 0.25rem 0.625rem;
     cursor: pointer;
     color: var(--text-secondary);
     border-radius: 6px;
     transition: all 0.2s;
-    font-size: 0.9rem;
+    font-size: 0.8rem;
 }
 
 .modal-view-tab-btn:hover {
@@ -1077,7 +1109,8 @@ body {
 
 .modal-content-area {
     position: relative;
-    min-height: 400px;
+    flex: 1;
+    min-height: 0;
 }
 
 .modal-content-area > * {
@@ -1088,35 +1121,93 @@ body {
     display: block;
 }
 
-/* Markdown プレビュー内の details タグのスタイリング */
-.markdown-preview details {
-    margin: 1rem 0;
-    padding: 1rem;
-    background: rgba(99, 102, 241, 0.05);
-    border-left: 3px solid var(--primary-color);
-    border-radius: 6px;
+/* トランスクリプトセクションのpadding */
+.markdown-preview .transcript-section {
+    padding: 3.5rem 0;
 }
 
-.markdown-preview details summary {
+.markdown-preview .transcript-section:first-of-type {
+    padding-top: 0;
+}
+
+/* 画像とタイムスタンプの配置 */
+.markdown-preview .image-with-timestamp {
+    position: relative;
+    display: inline-block;
+    margin: 1rem 0 0.25rem 0;
+}
+
+.markdown-preview .image-with-timestamp img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0;
+}
+
+.markdown-preview .image-timestamp {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    pointer-events: none;
+}
+
+/* Markdown プレビュー内の details タグのスタイリング */
+.markdown-preview details.video-info-details {
+    margin: 0.25rem 0 0.5rem 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+}
+
+.markdown-preview details.video-info-details summary {
     cursor: pointer;
     font-weight: 600;
-    color: var(--primary-color);
-    padding: 0.5rem;
+    color: var(--text-primary);
+    padding: 0.25rem 0;
     user-select: none;
     list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
-.markdown-preview details summary::-webkit-details-marker {
+.markdown-preview details.video-info-details summary::marker {
     display: none;
 }
 
-.markdown-preview details[open] summary {
-    margin-bottom: 0.75rem;
-    border-bottom: 1px solid var(--border-color);
+.markdown-preview details.video-info-details summary::-webkit-details-marker {
+    display: none;
 }
 
-.markdown-preview details p,
-.markdown-preview details ul {
+/* 閉じている状態: ▶ */
+.markdown-preview details.video-info-details summary::before {
+    content: '▶';
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+}
+
+/* 開いている状態: ▼ */
+.markdown-preview details.video-info-details[open] summary::before {
+    content: '▼';
+    color: var(--primary-color);
+}
+
+.markdown-preview details.video-info-details[open] summary {
+    margin-bottom: 0.5rem;
+    color: var(--primary-color);
+}
+
+.markdown-preview details.video-info-details p,
+.markdown-preview details.video-info-details ul {
     margin-top: 0.5rem;
     color: var(--text-primary);
+    padding-left: 1.5rem;
 }
