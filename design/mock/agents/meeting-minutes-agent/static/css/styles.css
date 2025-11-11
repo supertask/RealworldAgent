@@ -1000,3 +1000,111 @@ body {
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(99, 102, 241, 0.2);
 }
+
+/* モーダルの2段階タブスタイル */
+.modal-file-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    border-bottom: 2px solid var(--border-color);
+    user-select: none;
+}
+
+.modal-file-tab-btn {
+    background: none;
+    border: none;
+    padding: 0.875rem 1.5rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+    border-bottom: 3px solid transparent;
+    transition: all 0.2s;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.modal-file-tab-btn:hover {
+    color: var(--text-primary);
+    background: rgba(99, 102, 241, 0.05);
+}
+
+.modal-file-tab-btn.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.modal-view-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    user-select: none;
+}
+
+.modal-view-tab-btn {
+    background: none;
+    border: none;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    transition: all 0.2s;
+    font-size: 0.9rem;
+}
+
+.modal-view-tab-btn:hover {
+    color: var(--text-primary);
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.modal-view-tab-btn.active {
+    color: white;
+    background: var(--primary-color);
+}
+
+.modal-content-area {
+    position: relative;
+    min-height: 400px;
+}
+
+.modal-content-area > * {
+    display: none;
+}
+
+.modal-content-area > .active {
+    display: block;
+}
+
+/* Markdown プレビュー内の details タグのスタイリング */
+.markdown-preview details {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: rgba(99, 102, 241, 0.05);
+    border-left: 3px solid var(--primary-color);
+    border-radius: 6px;
+}
+
+.markdown-preview details summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--primary-color);
+    padding: 0.5rem;
+    user-select: none;
+    list-style: none;
+}
+
+.markdown-preview details summary::-webkit-details-marker {
+    display: none;
+}
+
+.markdown-preview details[open] summary {
+    margin-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.markdown-preview details p,
+.markdown-preview details ul {
+    margin-top: 0.5rem;
+    color: var(--text-primary);
+}

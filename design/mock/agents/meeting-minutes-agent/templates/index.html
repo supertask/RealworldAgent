@@ -119,19 +119,19 @@
                 <h2>ステップ 3 & 4: 生成された議事録</h2>
                 
                 <div class="result-tabs">
-                    <button class="tab-btn active" data-tab="enhanced-transcript-preview">画像付き文字起こし（プレビュー）</button>
-                    <button class="tab-btn" data-tab="enhanced-transcript-md">画像付き文字起こし（Markdown）</button>
+                    <button class="tab-btn active" data-tab="enhanced-transcript-preview">文字&シーン起こし（プレビュー）</button>
+                    <button class="tab-btn" data-tab="enhanced-transcript-md">文字&シーン起こし（Markdown）</button>
                     <button class="tab-btn" data-tab="minutes-preview">議事録（プレビュー）</button>
                     <button class="tab-btn" data-tab="minutes-md">議事録（Markdown）</button>
                     <button class="tab-btn" data-tab="json">JSON</button>
                 </div>
 
-                <!-- 画像付き文字起こしプレビュー -->
+                <!-- 文字&シーン起こしプレビュー -->
                 <div class="tab-content active" id="tab-enhanced-transcript-preview">
                     <div id="enhanced-transcript-preview" class="markdown-preview"></div>
                 </div>
 
-                <!-- 画像付き文字起こしMarkdown -->
+                <!-- 文字&シーン起こしMarkdown -->
                 <div class="tab-content" id="tab-enhanced-transcript-md">
                     <textarea id="enhanced-transcript-md-content" class="code-editor" readonly></textarea>
                 </div>
@@ -153,7 +153,7 @@
 
                 <div class="action-buttons">
                     <button id="download-md-btn" class="btn btn-primary">
-                        📥 ZIPでダウンロード（議事録・文字起こし・画像）
+                        📥 ZIPでダウンロード（議事録・文字&シーン起こし・文字起こし・画像）
                     </button>
                     <button id="new-video-btn" class="btn btn-secondary">
                         🔄 新しい動画を処理
@@ -194,7 +194,7 @@
         </aside>
     </div>
 
-    <!-- ファイル表示モーダル（既存の構造を維持し、プレビューを強調） -->
+    <!-- ファイル表示モーダル（2段階タブ構造） -->
     <div id="file-view-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -202,14 +202,21 @@
                 <button class="modal-close" id="modal-close">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="modal-tabs">
-                    <button class="modal-tab-btn active" data-tab="preview">プレビュー</button>
-                    <button class="modal-tab-btn" data-tab="markdown">Markdown</button>
+                <!-- 第1レベルタブ: ファイルタイプ -->
+                <div class="modal-file-tabs">
+                    <button class="modal-file-tab-btn active" data-file-type="enhanced_transcript">文字&シーン起こし</button>
+                    <button class="modal-file-tab-btn" data-file-type="minutes">議事録</button>
                 </div>
-                <div class="modal-tab-content active" id="modal-preview">
-                    <div id="modal-preview-content" class="markdown-preview"></div>
+                
+                <!-- 第2レベルタブ: 表示形式 -->
+                <div class="modal-view-tabs">
+                    <button class="modal-view-tab-btn active" data-view-type="preview">プレビュー</button>
+                    <button class="modal-view-tab-btn" data-view-type="markdown">Markdown</button>
                 </div>
-                <div class="modal-tab-content" id="modal-markdown">
+                
+                <!-- コンテンツエリア -->
+                <div class="modal-content-area">
+                    <div id="modal-preview-content" class="markdown-preview active"></div>
                     <textarea id="modal-markdown-content" class="code-editor" readonly></textarea>
                 </div>
             </div>

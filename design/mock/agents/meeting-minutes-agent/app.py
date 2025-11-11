@@ -57,7 +57,6 @@ def load_config():
             "minutes_generation_enabled": False,
             "minutes_generation_method": "qwen3vl",
             "duplicate_removal_enabled": False,
-            "image_saving_enabled": True,
             "transnetv2": {
                 "detection_threshold": 0.5,
                 "use_frame_similarity": True,
@@ -146,17 +145,29 @@ def transcribe_audio(audio_path, video_path):
         
         print("🎤 Groq Whisper APIで文字起こし中...")
         
+        # 言語設定を取得
+        language_config = DEBUG_CONFIG.get("transcription_language", "auto")
+        
+        # リクエストデータを準備
+        request_data = {
+            'model': 'whisper-large-v3-turbo',
+            'response_format': 'verbose_json',
+        }
+        
+        # 言語が"auto"でなければ明示的に指定
+        if language_config != "auto":
+            request_data['language'] = language_config
+            print(f"   言語指定: {language_config}")
+        else:
+            print(f"   言語: 自動検出")
+        
         # Groq Whisper API呼び出し
         with open(audio_path, 'rb') as audio_file:
             response = requests.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
                 headers={'Authorization': f'Bearer {GROQ_API_KEY}'},
                 files={'file': audio_file},
-                data={
-                    'model': 'whisper-large-v3-turbo',
-                    'response_format': 'verbose_json',
-                    'language': 'ja'
-                }
+                data=request_data
             )
         
         if response.status_code == 200:
@@ -1162,10 +1173,6 @@ def save_keyframes_to_disk(keyframes, video_id, output_folder):
     Returns:
         保存された画像ファイルのパスリスト、動画用サブフォルダパス
     """
-    if not DEBUG_CONFIG["image_saving_enabled"]:
-        print("🚫 画像保存: 無効化されています")
-        return [], None
-
     import base64
     import os
     
@@ -1174,11 +1181,15 @@ def save_keyframes_to_disk(keyframes, video_id, output_folder):
     video_subfolder = os.path.join(output_folder, video_prefix)
     os.makedirs(video_subfolder, exist_ok=True)
     
+    print(f"📁 保存先フォルダ: {video_subfolder}")
+    print(f"   キーフレーム数: {len(keyframes)}")
+    
     saved_images = []
     
     for idx, kf in enumerate(keyframes):
         image_b64 = kf.get('image_base64', '')
         if not image_b64:
+            print(f"⚠️ キーフレーム{idx}: image_base64が空です")
             continue
         
         try:
@@ -1324,6 +1335,9 @@ def generate_frame_metadata(keyframes, video_path, video_id, output_folder):
     metadata_path = os.path.join(video_subfolder, 'frame_metadata.json')
     os.makedirs(video_subfolder, exist_ok=True)
     
+    print(f"📋 メタデータ保存先: {metadata_path}")
+    print(f"   キーフレーム数: {len(keyframes)}")
+    
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
     
@@ -1421,6 +1435,9 @@ def generate_batch_plan(keyframes, video_subfolder, max_images_per_batch=6, over
     
     # JSONファイルに保存
     batch_plan_path = os.path.join(video_subfolder, 'batch_annotation_plan.json')
+    
+    print(f"📦 バッチプラン保存先: {batch_plan_path}")
+    print(f"   バッチ数: {len(batches)}")
     
     with open(batch_plan_path, 'w', encoding='utf-8') as f:
         json.dump(batch_plan, f, ensure_ascii=False, indent=2)
@@ -1786,7 +1803,7 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
         Markdown形式の拡張文字起こし
     """
     now = datetime.datetime.now()
-    markdown = f"""# 画像付き文字起こし - {video_id}
+    markdown = f"""# 文字&シーン起こし - {video_id}
 
 **生成日時**: {now.strftime('%Y年%m月%d日 %H:%M')}
 
@@ -1808,19 +1825,12 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
     for segment in segments:
         start_time = segment.get('start', 0)
         end_time = segment.get('end', 0)
-        enhanced_text = segment.get('enhanced_text', segment.get('text', ''))
-        original_text = segment.get('original_text', '')
+        original_text = segment.get('original_text', segment.get('text', ''))
         has_visual_changes = segment.get('has_visual_changes', False)
         
         # タイムスタンプ付きテキスト
-        markdown += f"## [{start_time:.1f}秒 - {end_time:.1f}秒]\n\n"
-        
-        # 拡張テキストを表示
-        markdown += f"{enhanced_text}\n\n"
-        
-        # 元のテキストと異なる場合は注記
-        if enhanced_text != original_text:
-            markdown += f"<details>\n<summary>元の音声文字起こし</summary>\n\n{original_text}\n\n</details>\n\n"
+        markdown += f"**[{start_time:.1f}秒 - {end_time:.1f}秒]**\n\n"
+        markdown += f"{original_text}\n\n"
         
         # このセグメントに対応する画像を検索
         related_keyframes = [
@@ -1828,45 +1838,52 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
             if abs(kf.get('timestamp', 0) - start_time) <= 3.0
         ]
         
-        # 画像を埋め込み（アノテーション情報付き）
-        for kf in related_keyframes[:3]:  # 最大3枚まで
-            image_name = kf.get('image', '')
-            timestamp = kf.get('timestamp', 0)
-            frame_index = kf.get('frame_index')
-            
-            if image_name:
-                markdown += f"### 画像 ({timestamp:.1f}秒時点)\n\n"
-                markdown += f"![{image_name}]({image_name})\n\n"
+        # 画像を先に表示
+        if related_keyframes:
+            for kf in related_keyframes[:3]:  # 最大3枚まで
+                image_name = kf.get('image', '')
+                timestamp = kf.get('timestamp', 0)
                 
-                # アノテーション情報があれば追加
+                if image_name:
+                    markdown += f"![{image_name}]({image_name})\n\n"
+                    markdown += f"*画像タイムスタンプ: {timestamp:.1f}秒*\n\n"
+            
+            # 映像情報を後に表示（detailsなし）
+            markdown += "**▶︎ 映像情報**\n\n"
+            
+            for kf in related_keyframes[:3]:
+                timestamp = kf.get('timestamp', 0)
+                frame_index = kf.get('frame_index')
+                
+                # アノテーション情報を取得
                 if frame_index is not None and frame_index in annotation_map:
                     ann = annotation_map[frame_index]
                     ann_data = ann.get('annotation', {})
                     
+                    # シーンの説明
                     if ann_data.get('scene'):
-                        markdown += f"**シーン**: {ann_data['scene']}\n\n"
+                        markdown += f"**{timestamp:.1f}秒時点**: {ann_data['scene']}\n\n"
                     
+                    # 検出オブジェクト
                     if ann_data.get('objects'):
-                        markdown += f"**検出オブジェクト**: {', '.join(ann_data['objects'])}\n\n"
+                        markdown += f"- **検出オブジェクト**: {', '.join(ann_data['objects'])}\n"
                     
+                    # 検出テキスト
                     if ann_data.get('text'):
                         text_items = [t.get('content', '') for t in ann_data['text'] if t.get('content')]
                         if text_items:
-                            markdown += f"**検出テキスト**: {', '.join(text_items)}\n\n"
+                            markdown += f"- **検出テキスト**: {', '.join(text_items)}\n"
                     
-                    # visual_changesがあれば表示
+                    # visual_changes
                     visual_changes = ann_data.get('visual_changes', [])
                     if visual_changes:
-                        markdown += f"**前のフレームからの変化**:\n"
-                        for change in visual_changes:
-                            markdown += f"- {change}\n"
-                        markdown += "\n"
-                
-                markdown += "---\n\n"
+                        markdown += f"- **前フレームからの変化**: {', '.join(visual_changes)}\n"
+                    
+                    markdown += "\n"
         
-        markdown += "\n"
+        markdown += "---\n\n"
     
-    markdown += f"\n*画像付き文字起こしは自動生成されました。生成日時: {now.strftime('%Y-%m-%d %H:%M:%S')}*\n"
+    markdown += f"\n*文字&シーン起こしは自動生成されました。生成日時: {now.strftime('%Y-%m-%d %H:%M:%S')}*\n"
     
     return markdown
 
@@ -2063,8 +2080,15 @@ def generate_minutes_endpoint(video_id):
         
         # キーフレーム画像を保存（ファイル名を更新）
         print("💾 キーフレーム画像を保存中...")
+        print(f"   キーフレーム数: {len(keyframes)}")
+        if keyframes:
+            print(f"   最初のキーフレームのキー: {list(keyframes[0].keys())}")
+            print(f"   image_base64の有無: {'image_base64' in keyframes[0]}")
+            if 'image_base64' in keyframes[0]:
+                image_b64_len = len(keyframes[0].get('image_base64', ''))
+                print(f"   image_base64の長さ: {image_b64_len}文字")
         _, video_subfolder = save_keyframes_to_disk(keyframes, video_id, app.config['OUTPUT_FOLDER'])
-        print(f"✅ キーフレーム画像保存完了")
+        print(f"✅ キーフレーム画像保存完了 (保存先: {video_subfolder})")
         
         # フレームメタデータ生成
         print("📋 フレームメタデータ生成中...")
@@ -2073,7 +2097,11 @@ def generate_minutes_endpoint(video_id):
         # バッチプラン生成
         max_images_per_batch = DEBUG_CONFIG.get("batch_max_images", 6)
         print(f"📦 バッチプラン生成中... (最大{max_images_per_batch}枚/バッチ)")
-        batch_plan_path = generate_batch_plan(keyframes, video_subfolder, max_images_per_batch, overlap_frames=1)
+        if video_subfolder:
+            batch_plan_path = generate_batch_plan(keyframes, video_subfolder, max_images_per_batch, overlap_frames=1)
+        else:
+            print("⚠️ video_subfolderがNoneのため、バッチプラン生成をスキップ")
+            batch_plan_path = None
         
         # アノテーション処理（有効な場合）
         annotation_progress = {
@@ -2148,6 +2176,9 @@ def generate_minutes_endpoint(video_id):
         # 保存先フォルダ（サブフォルダがない場合はoutputs直下）
         save_folder = video_subfolder if video_subfolder else app.config['OUTPUT_FOLDER']
         
+        # 保存先フォルダが存在することを確認
+        os.makedirs(save_folder, exist_ok=True)
+        
         # 1. 拡張文字起こしMarkdownを生成・保存
         enhanced_transcript_markdown = enhanced_transcript_to_markdown(
             enhanced_transcript, keyframes, video_id, image_annotations
@@ -2155,27 +2186,45 @@ def generate_minutes_endpoint(video_id):
         enhanced_transcript_filename = "enhanced_transcript.md"
         enhanced_transcript_path = os.path.join(save_folder, enhanced_transcript_filename)
         
-        with open(enhanced_transcript_path, 'w', encoding='utf-8') as f:
-            f.write(enhanced_transcript_markdown)
-        print(f"✅ 拡張文字起こしを保存: {enhanced_transcript_filename}")
+        try:
+            with open(enhanced_transcript_path, 'w', encoding='utf-8') as f:
+                f.write(enhanced_transcript_markdown)
+            print(f"✅ 拡張文字起こしを保存: {enhanced_transcript_path}")
+        except Exception as e:
+            print(f"❌ 拡張文字起こし保存エラー: {str(e)}")
+            print(f"   保存先: {enhanced_transcript_path}")
+            import traceback
+            traceback.print_exc()
         
         # 2. 議事録Markdownを生成
         minutes_markdown = minutes_to_markdown(minutes)
         minutes_filename = "minutes.md"
         minutes_path = os.path.join(save_folder, minutes_filename)
         
-        with open(minutes_path, 'w', encoding='utf-8') as f:
-            f.write(minutes_markdown)
-        print(f"✅ 議事録を保存: {minutes_filename}")
+        try:
+            with open(minutes_path, 'w', encoding='utf-8') as f:
+                f.write(minutes_markdown)
+            print(f"✅ 議事録を保存: {minutes_path}")
+        except Exception as e:
+            print(f"❌ 議事録保存エラー: {str(e)}")
+            print(f"   保存先: {minutes_path}")
+            import traceback
+            traceback.print_exc()
         
         # 3. 文字起こしMarkdownを生成（元の文字起こし）
         transcript_markdown = transcript_to_markdown(transcript, keyframes, video_id)
         transcript_filename = "transcript.md"
         transcript_path = os.path.join(save_folder, transcript_filename)
         
-        with open(transcript_path, 'w', encoding='utf-8') as f:
-            f.write(transcript_markdown)
-        print(f"✅ 文字起こしを保存: {transcript_filename}")
+        try:
+            with open(transcript_path, 'w', encoding='utf-8') as f:
+                f.write(transcript_markdown)
+            print(f"✅ 文字起こしを保存: {transcript_path}")
+        except Exception as e:
+            print(f"❌ 文字起こし保存エラー: {str(e)}")
+            print(f"   保存先: {transcript_path}")
+            import traceback
+            traceback.print_exc()
         
         # ZIPファイル名を生成
         zip_filename = f"output_{video_id.replace('.', '_')}.zip"

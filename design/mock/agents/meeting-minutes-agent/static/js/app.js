@@ -99,10 +99,18 @@ function setupEventListeners() {
         });
     }
     
-    // モーダルタブ切り替え
-    modalTabBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            switchModalTab(btn.dataset.tab);
+    // モーダルタブ切り替え（削除 - 新しい2段階タブ方式に置き換え）
+    // モーダルファイルタイプタブ
+    document.querySelectorAll('.modal-file-tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            switchModalFileTab(e.target.dataset.fileType);
+        });
+    });
+    
+    // モーダル表示形式タブ
+    document.querySelectorAll('.modal-view-tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            switchModalViewTab(e.target.dataset.viewType);
         });
     });
 }
@@ -318,10 +326,13 @@ async function generateMinutes() {
         appState.transcriptMarkdown = data.transcript_markdown;
         appState.downloadUrl = data.download_url;
 
-        // UI更新
+        // UI更新（モーダル表示）
         displayMinutes(data.minutes, data.minutes_markdown, data.enhanced_transcript_markdown, data.transcript_markdown);
         processingSection.style.display = 'none';
-        resultSection.style.display = 'block';
+        
+        // 生成完了後、モーダルで表示
+        showGeneratedMinutesModal(appState.videoId, data.enhanced_transcript_markdown, data.minutes_markdown);
+        
         updateProgressStep(3);
 
         // 出力一覧を更新
@@ -501,7 +512,7 @@ async function loadOutputsList() {
             // ファイルタイプの日本語名マッピング
             const fileTypeNames = {
                 'minutes': '議事録',
-                'enhanced_transcript': '画像付き文字起こし',
+                'enhanced_transcript': '文字&シーン起こし',
                 'transcript': '文字起こし',
                 'legacy': 'ファイル'
             };
@@ -619,8 +630,12 @@ function startAnnotationProgressPolling(videoId) {
     }, 1000); // 1秒ごとにポーリング
 }
 
-// ファイル表示モーダル関連
-let currentDownloadUrl = null;
+// ファイル表示モーダル関連（2段階タブ対応）
+let currentModalData = {
+    videoId: null,
+    enhanced_transcript: { markdown: '', downloadUrl: '' },
+    minutes: { markdown: '', downloadUrl: '' }
+};
 
 async function showFileModal(viewUrl, downloadUrl, title) {
     const modal = document.getElementById('file-view-modal');
@@ -634,43 +649,57 @@ async function showFileModal(viewUrl, downloadUrl, title) {
         return;
     }
     
-    // タイトルを設定
-    modalTitle.textContent = title || 'ファイル表示';
-    
-    // ダウンロードURLを保存
-    currentDownloadUrl = downloadUrl;
-    if (modalDownloadBtn) {
-        modalDownloadBtn.href = downloadUrl;
-        modalDownloadBtn.download = '';
-    }
+    // タイトルを設定（動画IDのみ）
+    const videoIdMatch = viewUrl.match(/\/api\/view-file\/([^/]+)\//);
+    const videoId = videoIdMatch ? videoIdMatch[1] : null;
+    modalTitle.textContent = videoId || 'ファイル表示';
     
     // モーダルを表示
     modal.style.display = 'flex';
-    document.body.style.overflow = 'hidden'; // 背景のスクロールを無効化
+    document.body.style.overflow = 'hidden';
     
     // ローディング表示
     modalPreview.innerHTML = '<div style="text-align: center; padding: 2rem;"><div class="spinner" style="margin: 0 auto;"></div><p style="margin-top: 1rem; color: var(--text-secondary);">読み込み中...</p></div>';
     modalMarkdown.value = '';
     
     try {
-        // ファイルを取得
-        const response = await fetch(viewUrl);
-        if (!response.ok) {
-            throw new Error('ファイルの取得に失敗しました');
+        // 文字&シーン起こしと議事録の両方を取得
+        const enhancedTranscriptUrl = videoId ? `/api/view-file/${videoId}/enhanced_transcript` : null;
+        const minutesUrl = videoId ? `/api/view-file/${videoId}/minutes` : null;
+        
+        currentModalData.videoId = videoId;
+        
+        // 文字&シーン起こしを取得
+        if (enhancedTranscriptUrl) {
+            try {
+                const response = await fetch(enhancedTranscriptUrl);
+                if (response.ok) {
+                    const data = await response.json();
+                    currentModalData.enhanced_transcript.markdown = data.markdown || '';
+                    currentModalData.enhanced_transcript.downloadUrl = `/api/download-minutes/${videoId}/enhanced_transcript`;
+                }
+            } catch (e) {
+                console.warn('文字&シーン起こし取得失敗:', e);
+            }
         }
         
-        const data = await response.json();
-        const markdown = data.markdown || '';
-        const videoId = data.video_id;
+        // 議事録を取得
+        if (minutesUrl) {
+            try {
+                const response = await fetch(minutesUrl);
+                if (response.ok) {
+                    const data = await response.json();
+                    currentModalData.minutes.markdown = data.markdown || '';
+                    currentModalData.minutes.downloadUrl = `/api/download-minutes/${videoId}/minutes`;
+                }
+            } catch (e) {
+                console.warn('議事録取得失敗:', e);
+            }
+        }
         
-        // Markdownを表示
-        modalMarkdown.value = markdown;
-        
-        // プレビューをレンダリング
-        renderMarkdown(markdown, 'modal-preview-content', videoId);
-        
-        // プレビュータブをアクティブに
-        switchModalTab('preview');
+        // 最初は文字&シーン起こしを表示
+        switchModalFileTab('enhanced_transcript');
+        switchModalViewTab('preview');
         
     } catch (error) {
         console.error('ファイル表示エラー:', error);
@@ -687,24 +716,82 @@ function closeFileModal() {
     currentDownloadUrl = null;
 }
 
-function switchModalTab(tabName) {
-    // タブボタンの更新
-    document.querySelectorAll('.modal-tab-btn').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.tab === tabName) {
-            btn.classList.add('active');
+// モーダルのファイルタイプタブを切り替え
+function switchModalFileTab(fileType) {
+    // ボタンの更新
+    document.querySelectorAll('.modal-file-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.fileType === fileType);
+    });
+    
+    // コンテンツを更新
+    const modalPreview = document.getElementById('modal-preview-content');
+    const modalMarkdown = document.getElementById('modal-markdown-content');
+    const modalDownloadBtn = document.getElementById('modal-download-btn');
+    
+    const fileData = currentModalData[fileType];
+    if (fileData && fileData.markdown) {
+        modalMarkdown.value = fileData.markdown;
+        renderMarkdown(fileData.markdown, 'modal-preview-content', currentModalData.videoId);
+        
+        if (modalDownloadBtn) {
+            modalDownloadBtn.href = fileData.downloadUrl;
         }
-    });
-    
-    // タブコンテンツの更新
-    document.querySelectorAll('.modal-tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    
-    const targetTab = document.getElementById(`modal-${tabName}`);
-    if (targetTab) {
-        targetTab.classList.add('active');
+    } else {
+        modalPreview.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">データが見つかりません</p>';
+        modalMarkdown.value = '';
     }
+}
+
+// モーダルの表示形式タブを切り替え
+function switchModalViewTab(viewType) {
+    // ボタンの更新
+    document.querySelectorAll('.modal-view-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.viewType === viewType);
+    });
+    
+    // コンテンツの表示切り替え
+    const modalPreview = document.getElementById('modal-preview-content');
+    const modalMarkdown = document.getElementById('modal-markdown-content');
+    
+    if (viewType === 'preview') {
+        modalPreview.classList.add('active');
+        modalMarkdown.classList.remove('active');
+    } else {
+        modalPreview.classList.remove('active');
+        modalMarkdown.classList.add('active');
+    }
+}
+
+// 生成完了後にモーダルを表示する関数
+function showGeneratedMinutesModal(videoId, enhancedTranscriptMarkdown, minutesMarkdown) {
+    const modal = document.getElementById('file-view-modal');
+    const modalTitle = document.getElementById('modal-title');
+    
+    if (!modal) {
+        console.error('モーダル要素が見つかりません');
+        return;
+    }
+    
+    // video_idからサブフォルダ名を取得
+    const videoPrefix = videoId.replace(/\./g, '_');
+    
+    // モーダルデータを設定
+    currentModalData.videoId = videoId;
+    currentModalData.enhanced_transcript.markdown = enhancedTranscriptMarkdown;
+    currentModalData.enhanced_transcript.downloadUrl = `/api/download-minutes/${videoPrefix}/enhanced_transcript`;
+    currentModalData.minutes.markdown = minutesMarkdown;
+    currentModalData.minutes.downloadUrl = `/api/download-minutes/${videoPrefix}/minutes`;
+    
+    // タイトル設定
+    modalTitle.textContent = videoId || '生成された議事録';
+    
+    // 最初は文字&シーン起こしを表示
+    switchModalFileTab('enhanced_transcript');
+    switchModalViewTab('preview');
+    
+    // モーダルを表示
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
 }
 
 // 定期的に出力一覧を更新
