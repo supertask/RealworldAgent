@@ -235,20 +235,17 @@ async function processVideo() {
         processingSection.style.display = 'block';
         updateProgressStep(2);
 
-        // シミュレート処理ステップ
-        console.log('⏳ 処理ステップをシミュレート中...');
-        await simulateProcessingSteps();
-
-        // アノテーション進捗監視（有効な場合）
+        // 処理進捗監視を開始
         if (appState.videoId) {
-            startAnnotationProgressPolling(appState.videoId);
+            startProcessingProgressPolling(appState.videoId);
         }
 
-        // 議事録生成
+        // 議事録生成（非同期で実行）
         console.log('🧠 議事録を生成中...');
-        await generateMinutes();
-
-        console.log('✅ 処理完了');
+        generateMinutes().catch(error => {
+            console.error('❌ 議事録生成エラー:', error);
+            alert('議事録の生成に失敗しました: ' + error.message);
+        });
 
     } catch (error) {
         console.error('❌ エラーが発生しました:', error);
@@ -261,54 +258,84 @@ async function processVideo() {
     }
 }
 
-async function simulateProcessingSteps() {
-    try {
-        // サーバーからconfig.jsonを取得
-        const response = await fetch('/api/debug-config');
-        const config = await response.json();
-        
-        const steps = [
-            { id: 'step-audio', name: '音声抽出', enabled: config.audio_extraction_enabled },
-            { id: 'step-transcribe', name: '文字起こし', enabled: config.transcription_enabled },
-            { id: 'step-keyframes', name: 'キーフレーム抽出', enabled: config.scene_detection_enabled },
-            { id: 'step-annotation', name: 'アノテーション', enabled: config.annotation_enabled },
-            { id: 'step-generate', name: '議事録生成', enabled: config.minutes_generation_enabled }
-        ];
-
-        for (const step of steps) {
-            const element = document.getElementById(step.id);
+function startProcessingProgressPolling(videoId) {
+    // アノテーション進捗監視も開始（詳細な進捗表示用）
+    startAnnotationProgressPolling(videoId);
+    console.log('📊 処理進捗監視開始:', videoId);
+    
+    const stepMapping = {
+        'audio_extraction': 'step-audio',
+        'transcription': 'step-transcribe',
+        'keyframe_extraction': 'step-keyframes',
+        'annotation': 'step-annotation',
+        'minutes_generation': 'step-generate'
+    };
+    
+    // ポーリング開始
+    processingProgressInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/processing-progress/${videoId}`);
+            const progress = await response.json();
             
-            if (!step.enabled) {
-                // 無効な場合はスキップ表示
-                element.style.opacity = '0.5';
-                element.style.textDecoration = 'line-through';
-                element.querySelector('.status-icon').textContent = '—';
-                console.log(`⏭️  ${step.name}: スキップ (設定で無効化)`);
-                continue;
+            // 各ステップの状態を更新
+            for (const [key, stepId] of Object.entries(stepMapping)) {
+                const stepInfo = progress[key];
+                const element = document.getElementById(stepId);
+                
+                if (!element) continue;
+                
+                if (!stepInfo || !stepInfo.enabled) {
+                    // 無効な場合はスキップ表示
+                    element.style.opacity = '0.5';
+                    element.style.textDecoration = 'line-through';
+                    const icon = element.querySelector('.status-icon');
+                    if (icon) icon.textContent = '—';
+                    continue;
+                }
+                
+                // ステータスに応じてアイコンを更新
+                const icon = element.querySelector('.status-icon');
+                if (!icon) continue;
+                
+                if (stepInfo.status === 'completed') {
+                    element.classList.add('completed');
+                    icon.textContent = '✓';
+                } else if (stepInfo.status === 'in_progress') {
+                    element.classList.remove('completed');
+                    icon.textContent = '⏳';
+                } else if (stepInfo.status === 'skipped') {
+                    element.style.opacity = '0.5';
+                    icon.textContent = '—';
+                } else {
+                    // not_started
+                    element.classList.remove('completed');
+                    icon.textContent = '⏳';
+                }
             }
             
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            element.classList.add('completed');
-            element.querySelector('.status-icon').textContent = '✓';
-            console.log(`✅ ${step.name}: 完了`);
+            // すべてのステップが完了したらポーリングを停止
+            const allCompleted = Object.entries(stepMapping).every(([key, stepId]) => {
+                const stepInfo = progress[key];
+                const element = document.getElementById(stepId);
+                
+                // 無効化されているステップは完了とみなす
+                if (!stepInfo || !stepInfo.enabled) {
+                    return true;
+                }
+                
+                // ステップが完了しているかチェック
+                return element && element.classList.contains('completed');
+            });
+            
+            if (allCompleted && processingProgressInterval) {
+                clearInterval(processingProgressInterval);
+                processingProgressInterval = null;
+                console.log('✅ すべての処理が完了しました');
+            }
+        } catch (error) {
+            console.error('❌ 進捗取得エラー:', error);
         }
-    } catch (error) {
-        console.error('❌ デバッグ設定の取得に失敗:', error);
-        // フォールバック：すべてのステップを表示
-        const steps = [
-            { id: 'step-audio', name: '音声抽出' },
-            { id: 'step-transcribe', name: '文字起こし' },
-            { id: 'step-keyframes', name: 'キーフレーム抽出' },
-            { id: 'step-generate', name: '議事録生成' }
-        ];
-        
-        for (const step of steps) {
-            const element = document.getElementById(step.id);
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            element.classList.add('completed');
-            element.querySelector('.status-icon').textContent = '✓';
-        }
-    }
+    }, 500); // 0.5秒ごとにポーリング
 }
 
 async function generateMinutes() {
@@ -326,6 +353,16 @@ async function generateMinutes() {
         appState.transcriptMarkdown = data.transcript_markdown;
         appState.downloadUrl = data.download_url;
 
+        // 進捗ポーリングを停止
+        if (processingProgressInterval) {
+            clearInterval(processingProgressInterval);
+            processingProgressInterval = null;
+        }
+        if (annotationProgressInterval) {
+            clearInterval(annotationProgressInterval);
+            annotationProgressInterval = null;
+        }
+
         // UI更新（モーダル表示）
         displayMinutes(data.minutes, data.minutes_markdown, data.enhanced_transcript_markdown, data.transcript_markdown);
         processingSection.style.display = 'none';
@@ -341,6 +378,16 @@ async function generateMinutes() {
     } catch (error) {
         console.error('エラー:', error);
         alert('議事録の生成に失敗しました: ' + error.message);
+        
+        // エラー時もポーリングを停止
+        if (processingProgressInterval) {
+            clearInterval(processingProgressInterval);
+            processingProgressInterval = null;
+        }
+        if (annotationProgressInterval) {
+            clearInterval(annotationProgressInterval);
+            annotationProgressInterval = null;
+        }
     }
 }
 
@@ -574,11 +621,14 @@ function updateProgressStep(stepNumber) {
     document.getElementById(`step-${stepNumber}`).classList.add('active');
 }
 
-// アノテーション進捗のポーリング
+// 処理進捗のポーリング（メイン）
+let processingProgressInterval = null;
+
+// アノテーション進捗のポーリング（詳細な進捗表示用）
 let annotationProgressInterval = null;
 
 function startAnnotationProgressPolling(videoId) {
-    console.log('📊 アノテーション進捗監視開始:', videoId);
+    console.log('📊 アノテーション詳細進捗監視開始:', videoId);
     
     const annotationStep = document.getElementById('step-annotation');
     const progressContainer = document.getElementById('annotation-progress');
@@ -604,25 +654,33 @@ function startAnnotationProgressPolling(videoId) {
             if (progress.status === 'in_progress' || progress.status === 'completed') {
                 // 進捗バー更新
                 const percentage = progress.percentage || 0;
-                progressBar.style.width = percentage + '%';
+                if (progressBar) progressBar.style.width = percentage + '%';
                 
                 // テキスト更新
-                progressText.textContent = 
-                    `バッチ ${progress.current_batch} / ${progress.total_batches} 処理中 (${progress.completed_frames}/${progress.total_frames}フレーム完了)`;
+                if (progressText) {
+                    progressText.textContent = 
+                        `バッチ ${progress.current_batch} / ${progress.total_batches} 処理中 (${progress.completed_frames}/${progress.total_frames}フレーム完了)`;
+                }
                 
                 // ステップアイコン更新
                 if (progress.status === 'completed') {
-                    annotationStep.classList.add('completed');
-                    annotationStep.querySelector('.status-icon').textContent = '✓';
-                    clearInterval(annotationProgressInterval);
-                    annotationProgressInterval = null;
+                    if (annotationStep) {
+                        annotationStep.classList.add('completed');
+                        const icon = annotationStep.querySelector('.status-icon');
+                        if (icon) icon.textContent = '✓';
+                    }
+                    if (annotationProgressInterval) {
+                        clearInterval(annotationProgressInterval);
+                        annotationProgressInterval = null;
+                    }
                     console.log('✅ アノテーション完了');
                 } else {
-                    annotationStep.querySelector('.status-icon').textContent = '⏳';
+                    const icon = annotationStep?.querySelector('.status-icon');
+                    if (icon) icon.textContent = '⏳';
                 }
             } else if (progress.status === 'not_started') {
                 // まだ開始していない
-                progressText.textContent = 'アノテーション待機中...';
+                if (progressText) progressText.textContent = 'アノテーション待機中...';
             }
         } catch (error) {
             console.error('❌ 進捗取得エラー:', error);

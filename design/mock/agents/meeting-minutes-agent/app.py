@@ -1846,10 +1846,10 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
                 
                 if image_name:
                     markdown += f"![{image_name}]({image_name})\n\n"
-                    markdown += f"*画像タイムスタンプ: {timestamp:.1f}秒*\n\n"
+                    markdown += f"*{timestamp:.1f}秒*\n\n"
             
-            # 映像情報を後に表示（detailsなし）
-            markdown += "**▶︎ 映像情報**\n\n"
+            # 映像情報を折りたたみ可能に
+            markdown += "<details>\n<summary>▶︎ 映像情報</summary>\n\n"
             
             for kf in related_keyframes[:3]:
                 timestamp = kf.get('timestamp', 0)
@@ -1880,6 +1880,8 @@ def enhanced_transcript_to_markdown(enhanced_transcript_data, keyframes, video_i
                         markdown += f"- **前フレームからの変化**: {', '.join(visual_changes)}\n"
                     
                     markdown += "\n"
+            
+            markdown += "</details>\n\n"
         
         markdown += "---\n\n"
     
@@ -2044,25 +2046,63 @@ def generate_minutes_endpoint(video_id):
         
         print(f"✅ ビデオファイルを確認: {video_path}")
         
+        # 進捗情報を初期化
+        video_prefix = video_id.replace('.', '_')
+        video_subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+        os.makedirs(video_subfolder, exist_ok=True)
+        progress_path = os.path.join(video_subfolder, 'processing_progress.json')
+        
+        processing_progress = {
+            "audio_extraction": {"status": "not_started", "enabled": DEBUG_CONFIG.get("audio_extraction_enabled", False)},
+            "transcription": {"status": "not_started", "enabled": DEBUG_CONFIG.get("transcription_enabled", False)},
+            "keyframe_extraction": {"status": "not_started", "enabled": DEBUG_CONFIG.get("scene_detection_enabled", False)},
+            "annotation": {"status": "not_started", "enabled": DEBUG_CONFIG.get("annotation_enabled", False)},
+            "minutes_generation": {"status": "not_started", "enabled": DEBUG_CONFIG.get("minutes_generation_enabled", False)}
+        }
+        
+        # 初期状態を保存
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
+        
         # 音声抽出
         print("🎵 音声抽出中...")
+        processing_progress["audio_extraction"]["status"] = "in_progress"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
+        
         audio_path = extract_audio_from_video(video_path)
         if audio_path:
             print(f"✅ 音声抽出完了: {audio_path}")
+        processing_progress["audio_extraction"]["status"] = "completed"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
         
         # 文字起こし
         print("📝 文字起こし中...")
+        processing_progress["transcription"]["status"] = "in_progress"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
+        
         transcript = transcribe_audio(audio_path, video_path)
         if transcript:
             print(f"✅ 文字起こし完了: {len(transcript.get('segments', []))} セグメント")
+        processing_progress["transcription"]["status"] = "completed"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
         
         # キーフレーム抽出
         print("🎬 キーフレーム抽出中...")
+        processing_progress["keyframe_extraction"]["status"] = "in_progress"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
+        
         keyframes = extract_keyframes(video_path, interval=5)
         print(f"✅ キーフレーム抽出完了: {len(keyframes)} フレーム")
+        processing_progress["keyframe_extraction"]["status"] = "completed"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
         
-        # 出力フォルダを作成
-        os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+        # 出力フォルダを作成（既に作成済み）
         
         # フレームフィルタリング（時間差 < 0.5秒のフレーム削除）
         original_keyframe_count = len(keyframes)
@@ -2115,6 +2155,9 @@ def generate_minutes_endpoint(video_id):
         if DEBUG_CONFIG.get("annotation_enabled", False) and batch_plan_path:
             print("🤖 アノテーション処理開始...")
             annotation_progress["status"] = "in_progress"
+            processing_progress["annotation"]["status"] = "in_progress"
+            with open(progress_path, 'w', encoding='utf-8') as f:
+                json.dump(processing_progress, f, ensure_ascii=False, indent=2)
             
             # バッチプランを読み込み
             with open(batch_plan_path, 'r', encoding='utf-8') as f:
@@ -2145,13 +2188,19 @@ def generate_minutes_endpoint(video_id):
             generate_image_annotations(batch_plan_path, video_subfolder, keyframes)
             
             annotation_progress["status"] = "completed"
+            processing_progress["annotation"]["status"] = "completed"
             print("✅ アノテーション処理完了")
         else:
             print("🚫 アノテーション: 無効化されています")
+            processing_progress["annotation"]["status"] = "skipped"
         
         # 進捗情報を保存（フロントエンド用）
-        progress_path = os.path.join(video_subfolder, 'annotation_progress.json')
         with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
+        
+        # アノテーション進捗情報を保存（フロントエンド用）
+        annotation_progress_path = os.path.join(video_subfolder, 'annotation_progress.json')
+        with open(annotation_progress_path, 'w', encoding='utf-8') as f:
             json.dump(annotation_progress, f, ensure_ascii=False, indent=2)
         
         # 画像アノテーション情報を読み込み（オプション）
@@ -2170,8 +2219,15 @@ def generate_minutes_endpoint(video_id):
         
         # 議事録生成（Groq GPT-OSS-120B）
         print("🧠 議事録を生成中（Groq GPT-OSS-120B）...")
+        processing_progress["minutes_generation"]["status"] = "in_progress"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
+        
         minutes = generate_minutes_with_groq(enhanced_transcript, keyframes)
         print(f"✅ 議事録生成完了")
+        processing_progress["minutes_generation"]["status"] = "completed"
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(processing_progress, f, ensure_ascii=False, indent=2)
         
         # 保存先フォルダ（サブフォルダがない場合はoutputs直下）
         save_folder = video_subfolder if video_subfolder else app.config['OUTPUT_FOLDER']
@@ -2480,6 +2536,35 @@ def get_debug_info():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/processing-progress/<video_id>', methods=['GET'])
+def get_processing_progress(video_id):
+    """処理の進捗を取得"""
+    try:
+        video_prefix = video_id.replace('.', '_')
+        video_subfolder = os.path.join(app.config['OUTPUT_FOLDER'], video_prefix)
+        progress_path = os.path.join(video_subfolder, 'processing_progress.json')
+        
+        if not os.path.exists(progress_path):
+            return jsonify({
+                "audio_extraction": {"status": "not_started", "enabled": False},
+                "transcription": {"status": "not_started", "enabled": False},
+                "keyframe_extraction": {"status": "not_started", "enabled": False},
+                "annotation": {"status": "not_started", "enabled": False},
+                "minutes_generation": {"status": "not_started", "enabled": False}
+            })
+        
+        with open(progress_path, 'r', encoding='utf-8') as f:
+            progress = json.load(f)
+        
+        return jsonify(progress)
+    
+    except Exception as e:
+        print(f"❌ 進捗取得エラー: {str(e)}")
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 
 @app.route('/api/annotation-progress/<video_id>', methods=['GET'])
